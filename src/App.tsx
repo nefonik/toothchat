@@ -350,41 +350,72 @@ export default function App() {
 
   // HANDLERS FOR AUTHENTICATION
   const handleRegister = async (token: string, displayName: string) => {
-    if (!identityKeyPair) {
-      const pair = await generateIdentityKeyPair();
-      setIdentityKeyPair(pair);
-    }
-    const pubJwk = await exportPublicKeyJwk(identityKeyPair!.publicKey);
-
-    return new Promise<{ success: boolean; error?: string }>((resolve) => {
-      const socket = io({ auth: { token: '' } });
-      socket.emit('auth:register', { token, displayName, ecdhPublicKeyJwk: pubJwk }, (res: any) => {
-        socket.disconnect();
-        if (res.success) {
-          localStorage.setItem('toothchat_token', token);
-          setAuthToken(token);
-          resolve({ success: true });
-        } else {
-          resolve({ success: false, error: res.error });
+    try {
+      let pair = identityKeyPair;
+      if (!pair) {
+        pair = await generateIdentityKeyPair();
+        setIdentityKeyPair(pair);
+        try {
+          const privJwk = await exportPrivateKeyJwk(pair.privateKey);
+          localStorage.setItem('toothchat_priv_key', privJwk);
+        } catch (e) {
+          console.warn('Failed to save private key:', e);
         }
+      }
+      const pubJwk = await exportPublicKeyJwk(pair.publicKey);
+
+      return new Promise<{ success: boolean; error?: string }>((resolve) => {
+        const socket = io({ auth: { token: '' } });
+
+        const timeout = setTimeout(() => {
+          socket.disconnect();
+          resolve({ success: false, error: 'Przekroczono czas oczekiwania serwera.' });
+        }, 6000);
+
+        socket.emit('auth:register', { token, displayName, ecdhPublicKeyJwk: pubJwk }, (res: any) => {
+          clearTimeout(timeout);
+          socket.disconnect();
+          if (res?.success) {
+            localStorage.setItem('toothchat_token', token);
+            setAuthToken(token);
+            resolve({ success: true });
+          } else {
+            resolve({ success: false, error: res?.error || 'Błąd rejestracji.' });
+          }
+        });
       });
-    });
+    } catch (err: any) {
+      console.error('Registration error:', err);
+      return { success: false, error: err?.message || 'Błąd inicjalizacji kluczy E2EE' };
+    }
   };
 
   const handleLogin = async (token: string) => {
-    return new Promise<{ success: boolean; error?: string }>((resolve) => {
-      const socket = io({ auth: { token: '' } });
-      socket.emit('auth:login', { token }, (res: any) => {
-        socket.disconnect();
-        if (res.success) {
-          localStorage.setItem('toothchat_token', token);
-          setAuthToken(token);
-          resolve({ success: true });
-        } else {
-          resolve({ success: false, error: res.error });
-        }
+    try {
+      return new Promise<{ success: boolean; error?: string }>((resolve) => {
+        const socket = io({ auth: { token: '' } });
+
+        const timeout = setTimeout(() => {
+          socket.disconnect();
+          resolve({ success: false, error: 'Przekroczono czas oczekiwania serwera.' });
+        }, 6000);
+
+        socket.emit('auth:login', { token }, (res: any) => {
+          clearTimeout(timeout);
+          socket.disconnect();
+          if (res?.success) {
+            localStorage.setItem('toothchat_token', token);
+            setAuthToken(token);
+            resolve({ success: true });
+          } else {
+            resolve({ success: false, error: res?.error || 'Nieprawidłowy token.' });
+          }
+        });
       });
-    });
+    } catch (err: any) {
+      console.error('Login error:', err);
+      return { success: false, error: err?.message || 'Błąd logowania' };
+    }
   };
 
   const handleLogout = () => {
