@@ -1,0 +1,6 @@
+{
+  "name": "Toothchat",
+  "description": "Bezpieczny komunikator Toothchat z szyfrowaniem E2EE, czatami tekstowymi, serwerami społecznościowymi i komunikacją głosowo-wideo.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
