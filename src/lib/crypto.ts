@@ -150,6 +150,33 @@ export async function generateGroupChannelKey(): Promise<CryptoKey> {
 }
 
 /**
+ * Derives a deterministic 256-bit AES-GCM key for a channel from channelId
+ */
+export async function deriveChannelKey(channelId: string): Promise<CryptoKey> {
+  const encoder = new TextEncoder();
+  const rawKeyData = encoder.encode(`toothchat_channel_secret_${channelId}`);
+  const baseKey = await window.crypto.subtle.importKey(
+    'raw',
+    rawKeyData,
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  );
+  return await window.crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: encoder.encode(`salt_${channelId}`),
+      iterations: 1000,
+      hash: 'SHA-256',
+    },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+}
+
+/**
  * Encrypts plaintext string using AES-GCM 256-bit
  * Returns Base64 Ciphertext and Base64 Initialization Vector (12 bytes)
  */

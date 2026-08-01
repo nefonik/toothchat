@@ -387,48 +387,79 @@ async function startAppServer() {
     let currentUserId = (socket as any).userId;
 
     // Helper to send state to user
-    const sendUserState = (userId: string) => {
+    const sendUserState = async (userId: string) => {
       const user = db.users.get(userId);
       if (!user) return;
 
-      // Map friends details
-      const friendsDetailed = user.friends.map(f => {
-        const friendUser = db.users.get(f.userId);
-        return {
-          userId: f.userId,
-          status: f.status,
-          updatedAt: f.updatedAt,
-          user: friendUser
-            ? {
-                id: friendUser.id,
-                displayName: friendUser.displayName,
-                userTag: friendUser.userTag,
-                ecdhPublicKeyJwk: friendUser.ecdhPublicKey,
-                status: db.userSocketMap.has(friendUser.id) ? 'online' : 'offline',
-                createdAt: friendUser.createdAt,
+      // Map friends details with Mongo async fallback
+      const friendsDetailed = await Promise.all(
+        user.friends.map(async f => {
+          let friendUser = db.users.get(f.userId);
+          if (!friendUser && isMongoConnected) {
+            try {
+              const mu = await UserModel.findOne({ id: f.userId });
+              if (mu) {
+                friendUser = {
+                  id: mu.id,
+                  tokenHash: mu.tokenHash,
+                  displayName: mu.displayName,
+                  userTag: mu.userTag,
+                  ecdhPublicKey: mu.ecdhPublicKey,
+                  status: 'offline',
+                  friends: (mu.friends || []).map((x: any) => ({
+                    userId: x.userId,
+                    status: x.status as any,
+                    updatedAt: x.updatedAt || new Date().toISOString(),
+                  })),
+                  createdAt: mu.createdAt || new Date().toISOString(),
+                };
+                db.users.set(friendUser.id, friendUser);
               }
-            : undefined,
-        };
-      });
+            } catch (err) {
+              console.error('[sendUserState Mongo lookup error]', err);
+            }
+          }
+
+          return {
+            userId: f.userId,
+            status: f.status,
+            updatedAt: f.updatedAt,
+            user: friendUser
+              ? {
+                  id: friendUser.id,
+                  displayName: friendUser.displayName,
+                  userTag: friendUser.userTag,
+                  ecdhPublicKeyJwk: friendUser.ecdhPublicKey,
+                  status: db.userSocketMap.has(friendUser.id) ? 'online' : 'offline',
+                  createdAt: friendUser.createdAt,
+                }
+              : undefined,
+          };
+        })
+      );
 
       // Servers joined
       const userServers = Array.from(db.servers.values()).filter(
         s => s.ownerId === userId || s.members.some(m => m.userId === userId) || s.id === 'srv_general_01'
       );
 
-      socket.emit('auth:state', {
-        user: {
-          id: user.id,
-          displayName: user.displayName,
-          userTag: user.userTag,
-          tokenHash: user.tokenHash,
-          ecdhPublicKeyJwk: user.ecdhPublicKey,
-          status: 'online',
-          createdAt: user.createdAt,
-        },
-        friends: friendsDetailed,
-        servers: userServers,
-      });
+      const targetSocketId = db.userSocketMap.get(userId);
+      const targetSocket = targetSocketId ? io.sockets.sockets.get(targetSocketId) : null;
+      if (targetSocket) {
+        targetSocket.emit('auth:state', {
+          user: {
+            id: user.id,
+            displayName: user.displayName,
+            userTag: user.userTag,
+            tokenHash: user.tokenHash,
+            ecdhPublicKeyJwk: user.ecdhPublicKey,
+            status: 'online',
+            createdAt: user.createdAt,
+          },
+          friends: friendsDetailed,
+          servers: userServers,
+        });
+      }
     };
 
     if (currentUserId) {
@@ -560,25 +591,55 @@ async function startAppServer() {
     });
 
     // 4. FRIEND REQUEST SYSTEM (Send, Accept, Decline, Remove)
-    socket.on('friend:request', (data: { targetUserTag: string }, callback) => {
+    socket.on('friend:request', async (data: { targetUserTag: string }, callback) => {
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       const currentUser = db.users.get(currentUserId);
-      if (!currentUser) return;
+      if (!currentUser) return callback?.({ success: false, error: 'Nie odnaleziono zalogowanego użytkownika' });
 
-      const targetTag = data.targetUserTag.trim();
-      if (targetTag === currentUser.userTag) {
+      const targetTag = (data.targetUserTag || '').trim();
+      if (!targetTag) {
+        return callback?.({ success: false, error: 'Podaj kod lub tag użytkownika (np. Jan#1234)' });
+      }
+
+      if (targetTag.toLowerCase() === currentUser.userTag.toLowerCase()) {
         return callback?.({ success: false, error: 'Nie możesz wysłać zaproszenia do samego siebie' });
       }
 
-      const targetUser = Array.from(db.users.values()).find(u => u.userTag.toLowerCase() === targetTag.toLowerCase());
+      let targetUser = Array.from(db.users.values()).find(u => u.userTag.toLowerCase() === targetTag.toLowerCase());
+      if (!targetUser && isMongoConnected) {
+        try {
+          const escapedTag = targetTag.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+          const mongoUser = await UserModel.findOne({ userTag: { $regex: new RegExp(`^${escapedTag}$`, 'i') } });
+          if (mongoUser) {
+            targetUser = {
+              id: mongoUser.id,
+              tokenHash: mongoUser.tokenHash,
+              displayName: mongoUser.displayName,
+              userTag: mongoUser.userTag,
+              ecdhPublicKey: mongoUser.ecdhPublicKey,
+              status: 'offline',
+              friends: (mongoUser.friends || []).map((f: any) => ({
+                userId: f.userId,
+                status: f.status as any,
+                updatedAt: f.updatedAt || new Date().toISOString(),
+              })),
+              createdAt: mongoUser.createdAt || new Date().toISOString(),
+            };
+            db.users.set(targetUser.id, targetUser);
+          }
+        } catch (e) {
+          console.error('[friend:request MongoDB lookup error]', e);
+        }
+      }
+
       if (!targetUser) {
-        return callback?.({ success: false, error: 'Nie znaleziono użytkownika o takim kodzie' });
+        return callback?.({ success: false, error: 'Nie znaleziono użytkownika o takim tagu. Sprawdź nazwę i identyfikator (np. Nazwa#1234).' });
       }
 
       // Check existing relation
       const existingInSelf = currentUser.friends.find(f => f.userId === targetUser.id);
       if (existingInSelf) {
-        return callback?.({ success: false, error: 'Relacja ze znajomym już istnieje' });
+        return callback?.({ success: false, error: 'Relacja ze znajomym już istnieje lub zaproszenie jest w trakcie procesowania' });
       }
 
       currentUser.friends.push({
@@ -587,15 +648,24 @@ async function startAppServer() {
         updatedAt: new Date().toISOString(),
       });
 
-      targetUser.friends.push({
-        userId: currentUser.id,
-        status: 'pending_received',
-        updatedAt: new Date().toISOString(),
-      });
+      const existingInTarget = targetUser.friends.find(f => f.userId === currentUser.id);
+      if (!existingInTarget) {
+        targetUser.friends.push({
+          userId: currentUser.id,
+          status: 'pending_received',
+          updatedAt: new Date().toISOString(),
+        });
+      } else {
+        existingInTarget.status = 'pending_received';
+      }
 
-      sendUserState(currentUser.id);
+      if (isMongoConnected) {
+        UserModel.updateOne({ id: currentUser.id }, { friends: currentUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+        UserModel.updateOne({ id: targetUser.id }, { friends: targetUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+      }
 
-      // Notify target if online
+      await sendUserState(currentUser.id);
+
       const targetSocketId = db.userSocketMap.get(targetUser.id);
       if (targetSocketId) {
         io.to(targetSocketId).emit('friend:incoming', {
@@ -606,52 +676,88 @@ async function startAppServer() {
             ecdhPublicKeyJwk: currentUser.ecdhPublicKey,
           },
         });
-        // refresh target state
-        const targetSocket = io.sockets.sockets.get(targetSocketId);
-        if (targetSocket) {
-          const tUser = db.users.get(targetUser.id);
-          if (tUser) sendUserState(targetUser.id);
-        }
+        await sendUserState(targetUser.id);
       }
 
       callback?.({ success: true, targetUserTag: targetUser.userTag });
     });
 
-    socket.on('friend:accept', (data: { targetUserId: string }, callback) => {
+    socket.on('friend:accept', async (data: { targetUserId: string }, callback) => {
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       const currentUser = db.users.get(currentUserId);
-      const targetUser = db.users.get(data.targetUserId);
+      let targetUser = db.users.get(data.targetUserId);
+
+      if (!targetUser && isMongoConnected) {
+        try {
+          const mongoUser = await UserModel.findOne({ id: data.targetUserId });
+          if (mongoUser) {
+            targetUser = {
+              id: mongoUser.id,
+              tokenHash: mongoUser.tokenHash,
+              displayName: mongoUser.displayName,
+              userTag: mongoUser.userTag,
+              ecdhPublicKey: mongoUser.ecdhPublicKey,
+              status: 'offline',
+              friends: (mongoUser.friends || []).map((f: any) => ({
+                userId: f.userId,
+                status: f.status as any,
+                updatedAt: f.updatedAt || new Date().toISOString(),
+              })),
+              createdAt: mongoUser.createdAt || new Date().toISOString(),
+            };
+            db.users.set(targetUser.id, targetUser);
+          }
+        } catch (e) {
+          console.error('[friend:accept MongoDB lookup error]', e);
+        }
+      }
+
       if (!currentUser || !targetUser) return callback?.({ success: false, error: 'Błąd użytkownika' });
 
       const relSelf = currentUser.friends.find(f => f.userId === targetUser.id);
       const relTarget = targetUser.friends.find(f => f.userId === currentUser.id);
 
       if (relSelf) relSelf.status = 'accepted';
-      if (relTarget) relTarget.status = 'accepted';
+      else currentUser.friends.push({ userId: targetUser.id, status: 'accepted', updatedAt: new Date().toISOString() });
 
-      sendUserState(currentUser.id);
+      if (relTarget) relTarget.status = 'accepted';
+      else targetUser.friends.push({ userId: currentUser.id, status: 'accepted', updatedAt: new Date().toISOString() });
+
+      if (isMongoConnected) {
+        UserModel.updateOne({ id: currentUser.id }, { friends: currentUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+        UserModel.updateOne({ id: targetUser.id }, { friends: targetUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+      }
+
+      await sendUserState(currentUser.id);
 
       const targetSocketId = db.userSocketMap.get(targetUser.id);
       if (targetSocketId) {
-        sendUserState(targetUser.id);
+        await sendUserState(targetUser.id);
       }
 
       callback?.({ success: true });
     });
 
-    socket.on('friend:decline', (data: { targetUserId: string }, callback) => {
+    socket.on('friend:decline', async (data: { targetUserId: string }, callback) => {
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       const currentUser = db.users.get(currentUserId);
-      const targetUser = db.users.get(data.targetUserId);
+      let targetUser = db.users.get(data.targetUserId);
 
       if (currentUser) {
         currentUser.friends = currentUser.friends.filter(f => f.userId !== data.targetUserId);
-        sendUserState(currentUser.id);
+        if (isMongoConnected) {
+          UserModel.updateOne({ id: currentUser.id }, { friends: currentUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+        }
+        await sendUserState(currentUser.id);
       }
+
       if (targetUser) {
         targetUser.friends = targetUser.friends.filter(f => f.userId !== currentUserId);
+        if (isMongoConnected) {
+          UserModel.updateOne({ id: targetUser.id }, { friends: targetUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+        }
         const targetSocketId = db.userSocketMap.get(targetUser.id);
-        if (targetSocketId) sendUserState(targetUser.id);
+        if (targetSocketId) await sendUserState(targetUser.id);
       }
 
       callback?.({ success: true });

@@ -5,7 +5,7 @@ import {
 } from './types';
 import { 
   generateIdentityKeyPair, exportPublicKeyJwk, importPublicKeyJwk, exportPrivateKeyJwk, 
-  importPrivateKeyJwk, deriveSharedKey, generateGroupChannelKey, encryptText, decryptText, hashToken 
+  importPrivateKeyJwk, deriveSharedKey, generateGroupChannelKey, deriveChannelKey, encryptText, decryptText, hashToken 
 } from './lib/crypto';
 import { AuthModal } from './components/AuthModal';
 import { Sidebar } from './components/Sidebar';
@@ -328,59 +328,89 @@ export default function App() {
 
   // Load chat history when active channel or DM changes
   useEffect(() => {
-    if (!socketRef.current || !socketRef.current.connected) return;
+    const socket = socketRef.current;
+    if (!socket) return;
 
-    setMessages([]);
+    const setupChatListenerAndHistory = async () => {
+      setMessages([]);
+      if (activeChannel) {
+        socket.emit('chat:get_history', { channelId: activeChannel.id }, async (res: any) => {
+          if (res?.success && res.history) {
+            const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
+            setMessages(decryptedList);
+          }
+        });
 
-    if (activeChannel) {
-      socketRef.current.emit('chat:get_history', { channelId: activeChannel.id }, async (res: any) => {
-        if (res.success && res.history) {
-          const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
-          setMessages(decryptedList);
-        }
-      });
+        socket.off(`chat:channel:${activeChannel.id}`);
+        socket.on(`chat:channel:${activeChannel.id}`, async (msg: EncryptedMessage) => {
+          const decryptedMsg = await processDecryption(msg);
+          setMessages(prev => {
+            if (prev.some(m => m.id === msg.id)) return prev;
+            return [...prev, decryptedMsg];
+          });
+        });
+      } else if (activeDmUser) {
+        socket.emit('chat:get_history', { recipientId: activeDmUser.id }, async (res: any) => {
+          if (res?.success && res.history) {
+            const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
+            setMessages(decryptedList);
+          }
+        });
 
-      // Listen for channel broadcasts
-      socketRef.current.off(`chat:channel:${activeChannel.id}`);
-      socketRef.current.on(`chat:channel:${activeChannel.id}`, async (msg: EncryptedMessage) => {
-        const decryptedMsg = await processDecryption(msg);
-        setMessages(prev => [...prev, decryptedMsg]);
-      });
-    } else if (activeDmUser) {
-      socketRef.current.emit('chat:get_history', { recipientId: activeDmUser.id }, async (res: any) => {
-        if (res.success && res.history) {
-          const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
-          setMessages(decryptedList);
-        }
-      });
+        socket.off(`chat:dm:${activeDmUser.id}`);
+        socket.on(`chat:dm:${activeDmUser.id}`, async (msg: EncryptedMessage) => {
+          const decryptedMsg = await processDecryption(msg);
+          setMessages(prev => {
+            if (prev.some(m => m.id === msg.id)) return prev;
+            return [...prev, decryptedMsg];
+          });
+        });
+      }
+    };
 
-      socketRef.current.off(`chat:dm:${activeDmUser.id}`);
-      socketRef.current.on(`chat:dm:${activeDmUser.id}`, async (msg: EncryptedMessage) => {
-        const decryptedMsg = await processDecryption(msg);
-        setMessages(prev => [...prev, decryptedMsg]);
-      });
+    if (socket.connected) {
+      setupChatListenerAndHistory();
     }
+    socket.on('connect', setupChatListenerAndHistory);
+
+    return () => {
+      socket.off('connect', setupChatListenerAndHistory);
+      if (activeChannel) socket.off(`chat:channel:${activeChannel.id}`);
+      if (activeDmUser) socket.off(`chat:dm:${activeDmUser.id}`);
+    };
   }, [activeChannel, activeDmUser]);
 
   // DECRYPTION HELPER USING AES-GCM
   const processDecryption = async (msg: EncryptedMessage): Promise<EncryptedMessage & { plaintext?: string; decryptionFailed?: boolean }> => {
     try {
-      if (!identityKeyPair) return { ...msg, decryptionFailed: true };
+      let aesKey: CryptoKey | undefined = undefined;
 
-      // Case A: Group/Channel Message (Uses Channel Symmetric Key or fallback Shared Key)
-      let aesKey = derivedKeysRef.current.get(msg.channelId || msg.serverId || msg.senderId);
-
-      if (!aesKey) {
-        // Derive shared key with sender if sender's public key exists
-        const senderUser = friends.find(f => f.userId === msg.senderId)?.user;
-        if (senderUser?.ecdhPublicKeyJwk) {
-          const senderPubKey = await importPublicKeyJwk(senderUser.ecdhPublicKeyJwk);
-          aesKey = await deriveSharedKey(identityKeyPair.privateKey, senderPubKey);
-          derivedKeysRef.current.set(msg.senderId, aesKey);
-        } else {
-          // Fallback group channel key generated for session
-          aesKey = await generateGroupChannelKey();
-          derivedKeysRef.current.set(msg.channelId || 'group_fallback', aesKey);
+      if (msg.channelId) {
+        aesKey = derivedKeysRef.current.get(msg.channelId);
+        if (!aesKey) {
+          aesKey = await deriveChannelKey(msg.channelId);
+          derivedKeysRef.current.set(msg.channelId, aesKey);
+        }
+      } else if (msg.recipientId) {
+        const otherUserId = msg.senderId === currentUser?.id ? msg.recipientId : msg.senderId;
+        aesKey = derivedKeysRef.current.get(otherUserId);
+        if (!aesKey) {
+          const peerUser = friends.find(f => f.userId === otherUserId)?.user;
+          if (identityKeyPair && peerUser?.ecdhPublicKeyJwk) {
+            const peerPubKey = await importPublicKeyJwk(peerUser.ecdhPublicKeyJwk);
+            aesKey = await deriveSharedKey(identityKeyPair.privateKey, peerPubKey);
+            derivedKeysRef.current.set(otherUserId, aesKey);
+          } else {
+            aesKey = await deriveChannelKey(`dm_${otherUserId}`);
+            derivedKeysRef.current.set(otherUserId, aesKey);
+          }
+        }
+      } else {
+        const keyId = msg.serverId || 'srv_general_01';
+        aesKey = derivedKeysRef.current.get(keyId);
+        if (!aesKey) {
+          aesKey = await deriveChannelKey(keyId);
+          derivedKeysRef.current.set(keyId, aesKey);
         }
       }
 
@@ -614,7 +644,7 @@ export default function App() {
 
   // HANDLERS FOR COMMUNITY & CHATS
   const handleSendMessage = async (text: string) => {
-    if (!socketRef.current || !identityKeyPair) return;
+    if (!socketRef.current) return;
 
     let targetId = activeChannel?.id || activeDmUser?.id;
     if (!targetId) return;
@@ -622,15 +652,22 @@ export default function App() {
     // Get or Derive AES Key
     let aesKey = derivedKeysRef.current.get(targetId);
     if (!aesKey) {
-      if (activeDmUser?.ecdhPublicKeyJwk) {
-        const remotePubKey = await importPublicKeyJwk(activeDmUser.ecdhPublicKeyJwk);
-        aesKey = await deriveSharedKey(identityKeyPair.privateKey, remotePubKey);
-        derivedKeysRef.current.set(activeDmUser.id, aesKey);
-      } else {
-        aesKey = await generateGroupChannelKey();
-        derivedKeysRef.current.set(targetId, aesKey);
+      if (activeChannel) {
+        aesKey = await deriveChannelKey(activeChannel.id);
+        derivedKeysRef.current.set(activeChannel.id, aesKey);
+      } else if (activeDmUser) {
+        if (identityKeyPair && activeDmUser.ecdhPublicKeyJwk) {
+          const remotePubKey = await importPublicKeyJwk(activeDmUser.ecdhPublicKeyJwk);
+          aesKey = await deriveSharedKey(identityKeyPair.privateKey, remotePubKey);
+          derivedKeysRef.current.set(activeDmUser.id, aesKey);
+        } else {
+          aesKey = await deriveChannelKey(`dm_${activeDmUser.id}`);
+          derivedKeysRef.current.set(activeDmUser.id, aesKey);
+        }
       }
     }
+
+    if (!aesKey) return;
 
     // Encrypt payload Zero-Knowledge
     const { ciphertext, iv } = await encryptText(text, aesKey);
@@ -643,8 +680,8 @@ export default function App() {
       iv,
       keyAlgorithm: 'AES-GCM-256',
     }, (res: any) => {
-      if (!res.success) {
-        alert(`Błąd wysyłania: ${res.error}`);
+      if (!res?.success) {
+        alert(`Błąd wysyłania: ${res?.error || 'Nieznany błąd'}`);
       }
     });
   };
