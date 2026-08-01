@@ -58,30 +58,49 @@ const MessageSchema = new mongoose.Schema({
   timestamp: { type: String, default: () => new Date().toISOString() },
 });
 
-export const UserModel = mongoose.model('User', UserSchema);
-export const ServerModel = mongoose.model('Server', ServerSchema);
-export const ChannelModel = mongoose.model('Channel', ChannelSchema);
-export const MessageModel = mongoose.model('Message', MessageSchema);
+export const UserModel: any = mongoose.models.User || mongoose.model('User', UserSchema);
+export const ServerModel: any = mongoose.models.Server || mongoose.model('Server', ServerSchema);
+export const ChannelModel: any = mongoose.models.Channel || mongoose.model('Channel', ChannelSchema);
+export const MessageModel: any = mongoose.models.Message || mongoose.model('Message', MessageSchema);
 
 export const DEFAULT_MONGODB_URI = "mongodb+srv://nefondupon3000_db_user:NEfiiFOLWARK009@zombek.r8vdzpa.mongodb.net/toothchat?retryWrites=true&w=majority&appName=Zombek";
 
-export async function connectToMongoDB() {
-  const mongoUri = process.env.MONGODB_URI || DEFAULT_MONGODB_URI;
-  if (!mongoUri) {
-    console.log('[MongoDB] MONGODB_URI nie jest zdefiniowane w zmiennych środowiskowych. Aplikacja działa w trybie in-memory.');
-    return false;
+let cached = (global as any).mongoose;
+if (!cached) {
+  cached = (global as any).mongoose = { conn: null, promise: null };
+}
+
+export async function connectToMongoDB(): Promise<boolean> {
+  const mongoUri = process.env.MONGODB_URI?.trim() || DEFAULT_MONGODB_URI;
+
+  if (cached.conn && mongoose.connection.readyState === 1) {
+    return true;
   }
 
-  if (mongoose.connection.readyState === 1) {
-    return true;
+  if (!cached.promise) {
+    const opts = {
+      bufferCommands: false,
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
+      family: 4,
+      maxPoolSize: 10,
+    };
+
+    cached.promise = mongoose.connect(mongoUri, opts).then((m) => {
+      console.log('MongoDB Connected successfully');
+      return m;
+    }).catch(err => {
+      console.error('MongoDB Connection Error:', err?.message || err);
+      cached.promise = null;
+      throw err;
+    });
   }
 
   try {
-    await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 3000, connectTimeoutMS: 3000 });
-    console.log('Successfully connected to MongoDB Atlas!');
+    cached.conn = await cached.promise;
     return true;
-  } catch (err: any) {
-    console.error('Failed to connect to MongoDB Atlas (running in in-memory fallback):', err?.message || err);
+  } catch (e) {
+    cached.promise = null;
     return false;
   }
 }
