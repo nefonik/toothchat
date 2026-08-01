@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { connectToMongoDB, UserModel } from '../../server/db';
+import { connectToMongoDB, UserModel } from '../_db.js';
 
 function computeSha256(str: string): string {
   return crypto.createHash('sha256').update(str).digest('hex');
@@ -19,7 +19,15 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const { token } = req.body || {};
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        body = {};
+      }
+    }
+    const { token } = body || {};
     if (!token || typeof token !== 'string' || !token.trim()) {
       return res.status(400).json({ success: false, error: 'Wymagany jest token konta.' });
     }
@@ -58,7 +66,9 @@ export default async function handler(req: any, res: any) {
     console.error('[API Login Error]:', err);
     return res.status(500).json({
       success: false,
-      error: 'Wystąpił wewnętrzny błąd serwera podczas logowania: ' + (err?.message || 'Błąd nieznany'),
+      error: err?.message || 'Wystąpił wewnętrzny błąd serwera podczas logowania.',
+      stack: err?.stack,
+      details: String(err),
     });
   }
 }

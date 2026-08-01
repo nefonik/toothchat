@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { connectToMongoDB, UserModel } from '../../server/db';
+import { connectToMongoDB, UserModel } from '../_db.js';
 
 function computeSha256(str: string): string {
   return crypto.createHash('sha256').update(str).digest('hex');
@@ -20,7 +20,15 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const { token, displayName, ecdhPublicKeyJwk } = req.body || {};
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        body = {};
+      }
+    }
+    const { token, displayName, ecdhPublicKeyJwk } = body || {};
 
     // 1. Walidacja danych wejściowych
     if (!token || typeof token !== 'string' || !token.trim()) {
@@ -87,7 +95,9 @@ export default async function handler(req: any, res: any) {
     console.error('[API Register Error]:', err);
     return res.status(500).json({
       success: false,
-      error: 'Wystąpił wewnętrzny błąd serwera podczas rejestracji: ' + (err?.message || 'Błąd nieznany'),
+      error: err?.message || 'Wystąpił wewnętrzny błąd serwera podczas rejestracji.',
+      stack: err?.stack,
+      details: String(err),
     });
   }
 }

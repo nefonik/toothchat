@@ -1,6 +1,6 @@
 import express from 'express';
 import crypto from 'crypto';
-import { connectToMongoDB, UserModel } from '../server/db';
+import { connectToMongoDB, UserModel } from './_db.js';
 
 const app = express();
 app.use(express.json());
