@@ -385,7 +385,18 @@ async function startAppServer() {
 
   io.on('connection', (socket: Socket) => {
     const getSocketUserId = (): string | undefined => {
-      return (socket as any).userId || db.socketUserMap.get(socket.id);
+      let uid = (socket as any).userId || db.socketUserMap.get(socket.id);
+      if (!uid && socket.handshake.auth?.token) {
+        const cleanToken = String(socket.handshake.auth.token).trim();
+        const tokenHash = computeSha256(cleanToken);
+        uid = db.tokenHashMap.get(tokenHash);
+        if (uid) {
+          (socket as any).userId = uid;
+          db.socketUserMap.set(socket.id, uid);
+          db.userSocketMap.set(uid, socket.id);
+        }
+      }
+      return uid;
     };
 
     let currentUserId = getSocketUserId();
@@ -461,11 +472,15 @@ async function startAppServer() {
         servers: userServers,
       };
 
-      const targetSocketId = db.userSocketMap.get(userId);
+      let targetSocketId = db.userSocketMap.get(userId);
+      if (!targetSocketId && (socket as any).userId === userId) {
+        targetSocketId = socket.id;
+        db.userSocketMap.set(userId, socket.id);
+        db.socketUserMap.set(socket.id, userId);
+      }
       if (targetSocketId) {
         io.to(targetSocketId).emit('auth:state', payload);
       }
-      socket.emit('auth:state', payload);
     };
 
     if (currentUserId) {
