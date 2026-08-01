@@ -72,8 +72,12 @@ export async function connectToMongoDB() {
     return false;
   }
 
+  if (mongoose.connection.readyState === 1) {
+    return true;
+  }
+
   try {
-    await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 5000 });
+    await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 3000, connectTimeoutMS: 3000 });
     console.log('Successfully connected to MongoDB Atlas!');
     return true;
   } catch (err: any) {
