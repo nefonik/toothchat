@@ -348,6 +348,52 @@ export default function App() {
     }
   };
 
+  // HELPER FOR TEMP AUTH SOCKET EMITS
+  const sendTempAuthEmit = (event: string, payload: any): Promise<{ success: boolean; error?: string }> => {
+    return new Promise((resolve) => {
+      const socket = io({ auth: { token: '' }, timeout: 8000, reconnection: false });
+      let resolved = false;
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          socket.disconnect();
+          resolve({ success: false, error: 'Przekroczono czas oczekiwania na połączenie z serwerem.' });
+        }
+      }, 8000);
+
+      socket.on('connect_error', (err) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          socket.disconnect();
+          resolve({ success: false, error: 'Błąd połączenia z serwerem: ' + (err?.message || 'Nie połączono') });
+        }
+      });
+
+      const doEmit = () => {
+        socket.emit(event, payload, (res: any) => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            socket.disconnect();
+            if (res?.success) {
+              resolve({ success: true });
+            } else {
+              resolve({ success: false, error: res?.error || 'Błąd operacji autoryzacji' });
+            }
+          }
+        });
+      };
+
+      if (socket.connected) {
+        doEmit();
+      } else {
+        socket.once('connect', doEmit);
+      }
+    });
+  };
+
   // HANDLERS FOR AUTHENTICATION
   const handleRegister = async (token: string, displayName: string) => {
     try {
@@ -364,26 +410,12 @@ export default function App() {
       }
       const pubJwk = await exportPublicKeyJwk(pair.publicKey);
 
-      return new Promise<{ success: boolean; error?: string }>((resolve) => {
-        const socket = io({ auth: { token: '' } });
-
-        const timeout = setTimeout(() => {
-          socket.disconnect();
-          resolve({ success: false, error: 'Przekroczono czas oczekiwania serwera.' });
-        }, 6000);
-
-        socket.emit('auth:register', { token, displayName, ecdhPublicKeyJwk: pubJwk }, (res: any) => {
-          clearTimeout(timeout);
-          socket.disconnect();
-          if (res?.success) {
-            localStorage.setItem('toothchat_token', token);
-            setAuthToken(token);
-            resolve({ success: true });
-          } else {
-            resolve({ success: false, error: res?.error || 'Błąd rejestracji.' });
-          }
-        });
-      });
+      const res = await sendTempAuthEmit('auth:register', { token, displayName, ecdhPublicKeyJwk: pubJwk });
+      if (res.success) {
+        localStorage.setItem('toothchat_token', token);
+        setAuthToken(token);
+      }
+      return res;
     } catch (err: any) {
       console.error('Registration error:', err);
       return { success: false, error: err?.message || 'Błąd inicjalizacji kluczy E2EE' };
@@ -392,26 +424,12 @@ export default function App() {
 
   const handleLogin = async (token: string) => {
     try {
-      return new Promise<{ success: boolean; error?: string }>((resolve) => {
-        const socket = io({ auth: { token: '' } });
-
-        const timeout = setTimeout(() => {
-          socket.disconnect();
-          resolve({ success: false, error: 'Przekroczono czas oczekiwania serwera.' });
-        }, 6000);
-
-        socket.emit('auth:login', { token }, (res: any) => {
-          clearTimeout(timeout);
-          socket.disconnect();
-          if (res?.success) {
-            localStorage.setItem('toothchat_token', token);
-            setAuthToken(token);
-            resolve({ success: true });
-          } else {
-            resolve({ success: false, error: res?.error || 'Nieprawidłowy token.' });
-          }
-        });
-      });
+      const res = await sendTempAuthEmit('auth:login', { token });
+      if (res.success) {
+        localStorage.setItem('toothchat_token', token);
+        setAuthToken(token);
+      }
+      return res;
     } catch (err: any) {
       console.error('Login error:', err);
       return { success: false, error: err?.message || 'Błąd logowania' };
