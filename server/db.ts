@@ -63,10 +63,13 @@ export const ServerModel = mongoose.model('Server', ServerSchema);
 export const ChannelModel = mongoose.model('Channel', ChannelSchema);
 export const MessageModel = mongoose.model('Message', MessageSchema);
 
-export const DEFAULT_MONGODB_URI = "mongodb+srv://nefondupon3000_db_user:GLFnE20ymgOIMt0W@zombek.r8vdzpa.mongodb.net/?appName=Zombek";
-
 export async function connectToMongoDB() {
-  const mongoUri = process.env.MONGODB_URI || DEFAULT_MONGODB_URI;
+  const mongoUri = process.env.MONGODB_URI;
+  if (!mongoUri) {
+    console.log('[MongoDB] MONGODB_URI nie jest zdefiniowane w zmiennych środowiskowych. Aplikacja działa w trybie in-memory.');
+    return false;
+  }
+
   try {
     await mongoose.connect(mongoUri);
     console.log('Successfully connected to MongoDB Atlas!');
