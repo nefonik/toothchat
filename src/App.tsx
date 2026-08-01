@@ -126,6 +126,50 @@ export default function App() {
   const [isVideoOn, setIsVideoOn] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
 
+  // Auto fetch user profile if authToken is present but currentUser is null
+  useEffect(() => {
+    if (authToken && !currentUser) {
+      fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: authToken }),
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (data?.success && data?.user) {
+            setCurrentUser(data.user);
+          } else if (data?.error && (data.error.includes('Nieprawidłowy') || data.error.includes('nie istnieje'))) {
+            localStorage.removeItem('toothchat_token');
+            setAuthToken(null);
+          }
+        })
+        .catch(err => {
+          console.warn('Auto-login fetch fallback error:', err);
+        });
+    }
+  }, [authToken, currentUser]);
+
+  // Fallback default server if logged in without active socket servers state
+  useEffect(() => {
+    if (currentUser && servers.length === 0) {
+      const defaultChannels: Channel[] = [
+        { id: 'ch_gen_text', serverId: 'srv_general_01', name: 'ogólny', type: 'text', topic: 'Główny kanał rozmów', createdBy: 'sys_admin', createdAt: new Date().toISOString() },
+        { id: 'ch_gen_voice', serverId: 'srv_general_01', name: 'Główny Głosowy', type: 'voice', createdBy: 'sys_admin', createdAt: new Date().toISOString() },
+      ];
+      setServers([{
+        id: 'srv_general_01',
+        name: 'Toothchat Community',
+        icon: '🦷',
+        ownerId: 'sys_admin',
+        members: [{ userId: currentUser.id, role: 'member', joinedAt: new Date().toISOString() }],
+        channels: defaultChannels,
+        createdAt: new Date().toISOString(),
+      }]);
+      if (!activeChannel) {
+        setActiveChannel(defaultChannels[0]);
+      }
+    }
+  }, [currentUser, servers.length]);
   useEffect(() => {
     async function initKeys() {
       if (!identityKeyPair) {
@@ -380,6 +424,9 @@ export default function App() {
           const data = await res.json();
           if (res.ok && data?.success) {
             localStorage.setItem('toothchat_token', token);
+            if (data?.user) {
+              setCurrentUser(data.user);
+            }
             setAuthToken(token);
             return { success: true };
           } else if (data?.error) {
@@ -475,6 +522,9 @@ export default function App() {
           const data = await res.json();
           if (res.ok && data?.success) {
             localStorage.setItem('toothchat_token', token);
+            if (data?.user) {
+              setCurrentUser(data.user);
+            }
             setAuthToken(token);
             return { success: true };
           } else if (data?.error) {

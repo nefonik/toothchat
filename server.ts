@@ -305,23 +305,60 @@ async function startAppServer() {
     }
   });
 
+  // Helper to get user by tokenHash with MongoDB dynamic lookup fallback
+  async function getUserByTokenHash(tokenHash: string): Promise<UserStore | null> {
+    const existingUserId = db.tokenHashMap.get(tokenHash);
+    if (existingUserId) {
+      const u = db.users.get(existingUserId);
+      if (u) return u;
+    }
+
+    if (isMongoConnected) {
+      try {
+        const u = await UserModel.findOne({ tokenHash });
+        if (u) {
+          const uObj: UserStore = {
+            id: u.id,
+            tokenHash: u.tokenHash,
+            displayName: u.displayName,
+            userTag: u.userTag,
+            ecdhPublicKey: u.ecdhPublicKey,
+            status: 'offline',
+            friends: (u.friends || []).map((f: any) => ({
+              userId: f.userId,
+              status: f.status as any,
+              updatedAt: f.updatedAt || new Date().toISOString(),
+            })),
+            createdAt: u.createdAt || new Date().toISOString(),
+          };
+          db.users.set(u.id, uObj);
+          db.tokenHashMap.set(u.tokenHash, u.id);
+          return uObj;
+        }
+      } catch (e) {
+        console.error('[MongoDB getUserByTokenHash error]', e);
+      }
+    }
+    return null;
+  }
+
   // REST API: Login
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', async (req, res) => {
     try {
       const { token } = req.body || {};
-      if (!token) {
-        return res.status(400).json({ success: false, error: 'Wymagany token' });
+      if (!token || typeof token !== 'string' || !token.trim()) {
+        return res.status(400).json({ success: false, error: 'Wymagany token konta.' });
       }
 
-      const tokenHash = computeSha256(token);
-      const userId = db.tokenHashMap.get(tokenHash);
+      const cleanToken = token.trim();
+      const tokenHash = computeSha256(cleanToken);
+      const user = await getUserByTokenHash(tokenHash);
 
-      if (!userId) {
-        return res.status(400).json({ success: false, error: 'Nieprawidłowy token konta. Sprawdź wpisany token.' });
+      if (!user) {
+        return res.status(401).json({ success: false, error: 'Nieprawidłowy token konta. Użytkownik nie istnieje.' });
       }
 
-      const user = db.users.get(userId);
-      return res.json({ success: true, userId, user });
+      return res.json({ success: true, userId: user.id, user });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err?.message || 'Błąd logowania' });
     }
@@ -332,16 +369,16 @@ async function startAppServer() {
   // ==========================================
 
   // Authentication Middleware for Socket Connections
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) {
       // Allow unauthenticated connection for registration
       return next();
     }
-    const tokenHash = computeSha256(token);
-    const userId = db.tokenHashMap.get(tokenHash);
-    if (userId) {
-      (socket as any).userId = userId;
+    const tokenHash = computeSha256(String(token).trim());
+    const user = await getUserByTokenHash(tokenHash);
+    if (user) {
+      (socket as any).userId = user.id;
     }
     next();
   });
@@ -471,19 +508,21 @@ async function startAppServer() {
     });
 
     // 2. LOGIN USER WITH STATELESS TOKEN
-    socket.on('auth:login', (data: { token: string }, callback) => {
+    socket.on('auth:login', async (data: { token: string }, callback) => {
       try {
-        if (!data.token) {
+        if (!data.token || typeof data.token !== 'string' || !data.token.trim()) {
           return callback({ success: false, error: 'Wymagany token' });
         }
 
-        const tokenHash = computeSha256(data.token);
-        const userId = db.tokenHashMap.get(tokenHash);
+        const cleanToken = data.token.trim();
+        const tokenHash = computeSha256(cleanToken);
+        const user = await getUserByTokenHash(tokenHash);
 
-        if (!userId) {
+        if (!user) {
           return callback({ success: false, error: 'Nieprawidłowy token autoryzacyjny' });
         }
 
+        const userId = user.id;
         currentUserId = userId;
         (socket as any).userId = userId;
         db.socketUserMap.set(socket.id, userId);
@@ -492,7 +531,7 @@ async function startAppServer() {
         sendUserState(userId);
         io.emit('user:presence', { userId, status: 'online' });
 
-        callback({ success: true, userId });
+        callback({ success: true, userId, user });
       } catch (err: any) {
         callback({ success: false, error: err?.message || 'Błąd logowania' });
       }
