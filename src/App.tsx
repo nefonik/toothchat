@@ -195,7 +195,7 @@ export default function App() {
   }, [authToken]);
 
   useEffect(() => {
-    if (!authToken || !identityKeyPair) return;
+    if (!authToken) return;
 
     // Connect Socket.io
     const socket = io({
@@ -208,11 +208,12 @@ export default function App() {
       setFriends(data.friends);
       setServers(data.servers);
 
-      // Set default initial channel if needed
-      if (data.servers.length > 0 && !activeChannel) {
+      // Set default initial channel and server if needed
+      if (data.servers && data.servers.length > 0) {
         const genServer = data.servers.find(s => s.id === 'srv_general_01') || data.servers[0];
-        if (genServer.channels.length > 0) {
-          setActiveChannel(genServer.channels[0]);
+        setActiveServerId(prev => prev || genServer.id);
+        if (genServer.channels && genServer.channels.length > 0) {
+          setActiveChannel(prev => prev || genServer.channels[0]);
         }
       }
     });

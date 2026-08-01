@@ -384,7 +384,11 @@ async function startAppServer() {
   });
 
   io.on('connection', (socket: Socket) => {
-    let currentUserId = (socket as any).userId;
+    const getSocketUserId = (): string | undefined => {
+      return (socket as any).userId || db.socketUserMap.get(socket.id);
+    };
+
+    let currentUserId = getSocketUserId();
 
     // Helper to send state to user
     const sendUserState = async (userId: string) => {
@@ -443,23 +447,25 @@ async function startAppServer() {
         s => s.ownerId === userId || s.members.some(m => m.userId === userId) || s.id === 'srv_general_01'
       );
 
+      const payload = {
+        user: {
+          id: user.id,
+          displayName: user.displayName,
+          userTag: user.userTag,
+          tokenHash: user.tokenHash,
+          ecdhPublicKeyJwk: user.ecdhPublicKey,
+          status: 'online',
+          createdAt: user.createdAt,
+        },
+        friends: friendsDetailed,
+        servers: userServers,
+      };
+
       const targetSocketId = db.userSocketMap.get(userId);
-      const targetSocket = targetSocketId ? io.sockets.sockets.get(targetSocketId) : null;
-      if (targetSocket) {
-        targetSocket.emit('auth:state', {
-          user: {
-            id: user.id,
-            displayName: user.displayName,
-            userTag: user.userTag,
-            tokenHash: user.tokenHash,
-            ecdhPublicKeyJwk: user.ecdhPublicKey,
-            status: 'online',
-            createdAt: user.createdAt,
-          },
-          friends: friendsDetailed,
-          servers: userServers,
-        });
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('auth:state', payload);
       }
+      socket.emit('auth:state', payload);
     };
 
     if (currentUserId) {
