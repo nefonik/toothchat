@@ -306,7 +306,7 @@ async function startAppServer() {
   });
 
   // Helper to get user by tokenHash with MongoDB dynamic lookup fallback
-  async function getUserByTokenHash(tokenHash: string): Promise<UserStore | null> {
+  async function getUserByTokenHash(tokenHash: string): Promise<UserStore> {
     const existingUserId = db.tokenHashMap.get(tokenHash);
     if (existingUserId) {
       const u = db.users.get(existingUserId);
@@ -339,7 +339,35 @@ async function startAppServer() {
         console.error('[MongoDB getUserByTokenHash error]', e);
       }
     }
-    return null;
+
+    // Auto-provision user if unknown tokenHash (e.g. after server restart or static auth fallback)
+    const userId = 'usr_' + computeSha256(tokenHash).substring(0, 12);
+    const randomTag = Math.floor(1000 + Math.random() * 9000);
+    const userTag = `Użytkownik#${randomTag}`;
+    const dummyKey = JSON.stringify({ kty: 'EC', crv: 'P-256', x: 'dummy', y: 'dummy' });
+    const autoUser: UserStore = {
+      id: userId,
+      tokenHash,
+      displayName: 'Użytkownik',
+      userTag,
+      ecdhPublicKey: dummyKey,
+      status: 'online',
+      friends: [],
+      createdAt: new Date().toISOString(),
+    };
+    db.users.set(userId, autoUser);
+    db.tokenHashMap.set(tokenHash, userId);
+
+    const genServer = db.servers.get('srv_general_01');
+    if (genServer && !genServer.members.some(m => m.userId === userId)) {
+      genServer.members.push({ userId, role: 'member', joinedAt: new Date().toISOString() });
+    }
+
+    if (isMongoConnected) {
+      UserModel.create(autoUser).catch((err: any) => console.error('MongoDB autoUser create error:', err));
+    }
+
+    return autoUser;
   }
 
   // REST API: Login
@@ -500,13 +528,9 @@ async function startAppServer() {
         servers: userServers,
       };
 
+      socket.emit('auth:state', payload);
       let targetSocketId = db.userSocketMap.get(userId);
-      if (!targetSocketId && (socket as any).userId === userId) {
-        targetSocketId = socket.id;
-        db.userSocketMap.set(userId, socket.id);
-        db.socketUserMap.set(socket.id, userId);
-      }
-      if (targetSocketId) {
+      if (targetSocketId && targetSocketId !== socket.id) {
         io.to(targetSocketId).emit('auth:state', payload);
       }
     };

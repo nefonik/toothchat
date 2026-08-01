@@ -153,8 +153,8 @@ export default function App() {
   useEffect(() => {
     if (currentUser && servers.length === 0) {
       const defaultChannels: Channel[] = [
-        { id: 'ch_gen_text', serverId: 'srv_general_01', name: 'ogólny', type: 'text', topic: 'Główny kanał rozmów', createdBy: 'sys_admin', createdAt: new Date().toISOString() },
-        { id: 'ch_gen_voice', serverId: 'srv_general_01', name: 'Główny Głosowy', type: 'voice', createdBy: 'sys_admin', createdAt: new Date().toISOString() },
+        { id: 'chn_general_text', serverId: 'srv_general_01', name: 'ogólny-czat', type: 'text', topic: 'Główny kanał rozmów', createdBy: 'sys_admin', createdAt: new Date().toISOString() },
+        { id: 'chn_general_voice', serverId: 'srv_general_01', name: 'Pokój Główny (Głos/Wideo)', type: 'voice', createdBy: 'sys_admin', createdAt: new Date().toISOString() },
       ];
       setServers([{
         id: 'srv_general_01',
@@ -211,9 +211,14 @@ export default function App() {
       // Set default initial channel and server if needed
       if (data.servers && data.servers.length > 0) {
         const genServer = data.servers.find(s => s.id === 'srv_general_01') || data.servers[0];
-        setActiveServerId(prev => prev || genServer.id);
+        setActiveServerId(genServer.id);
         if (genServer.channels && genServer.channels.length > 0) {
-          setActiveChannel(prev => prev || genServer.channels[0]);
+          setActiveChannel(prev => {
+            if (!prev || !genServer.channels.some(c => c.id === prev.id)) {
+              return genServer.channels[0];
+            }
+            return prev;
+          });
         }
       }
     });
