@@ -384,22 +384,50 @@ async function startAppServer() {
   });
 
   io.on('connection', (socket: Socket) => {
-    const getSocketUserId = (): string | undefined => {
+    let currentUserId: string | undefined;
+
+    const getSocketUserId = async (): Promise<string | undefined> => {
       let uid = (socket as any).userId || db.socketUserMap.get(socket.id);
-      if (!uid && socket.handshake.auth?.token) {
-        const cleanToken = String(socket.handshake.auth.token).trim();
+      if (uid) {
+        currentUserId = uid;
+        return uid;
+      }
+
+      const token = socket.handshake.auth?.token;
+      if (token) {
+        const cleanToken = String(token).trim();
         const tokenHash = computeSha256(cleanToken);
-        uid = db.tokenHashMap.get(tokenHash);
-        if (uid) {
-          (socket as any).userId = uid;
-          db.socketUserMap.set(socket.id, uid);
-          db.userSocketMap.set(uid, socket.id);
+        const user = await getUserByTokenHash(tokenHash);
+        if (user) {
+          (socket as any).userId = user.id;
+          db.socketUserMap.set(socket.id, user.id);
+          db.userSocketMap.set(user.id, socket.id);
+          currentUserId = user.id;
+          return user.id;
         }
       }
-      return uid;
+      return undefined;
     };
 
-    let currentUserId = getSocketUserId();
+    getSocketUserId().then(uid => {
+      if (uid) {
+        currentUserId = uid;
+        db.socketUserMap.set(socket.id, uid);
+        db.userSocketMap.set(uid, socket.id);
+
+        const genServer = db.servers.get('srv_general_01');
+        if (genServer && !genServer.members.some(m => m.userId === uid)) {
+          genServer.members.push({
+            userId: uid,
+            role: 'member',
+            joinedAt: new Date().toISOString(),
+          });
+        }
+
+        sendUserState(uid);
+        io.emit('user:presence', { userId: uid, status: 'online' });
+      }
+    });
 
     // Helper to send state to user
     const sendUserState = async (userId: string) => {
@@ -884,7 +912,7 @@ async function startAppServer() {
     });
 
     // 6. E2EE CHAT MESSAGING (Relays & Stores ONLY CIPHERTEXT)
-    socket.on('chat:send_message', (data: {
+    socket.on('chat:send_message', async (data: {
       serverId?: string;
       channelId?: string;
       recipientId?: string;
@@ -892,8 +920,31 @@ async function startAppServer() {
       iv: string;
       keyAlgorithm?: string;
     }, callback) => {
+      const currentUserId = await getSocketUserId();
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
-      const sender = db.users.get(currentUserId);
+
+      let sender = db.users.get(currentUserId);
+      if (!sender && isMongoConnected) {
+        try {
+          const mu = await UserModel.findOne({ id: currentUserId });
+          if (mu) {
+            sender = {
+              id: mu.id,
+              tokenHash: mu.tokenHash,
+              displayName: mu.displayName,
+              userTag: mu.userTag,
+              ecdhPublicKey: mu.ecdhPublicKey,
+              status: 'online',
+              friends: mu.friends || [],
+              createdAt: mu.createdAt || new Date().toISOString(),
+            };
+            db.users.set(currentUserId, sender);
+          }
+        } catch (e) {
+          console.error('[chat:send_message sender lookup error]', e);
+        }
+      }
+
       if (!sender) return callback?.({ success: false, error: 'Nie odnaleziono nadawcy' });
 
       if (!data.ciphertext || !data.iv) {
@@ -916,7 +967,7 @@ async function startAppServer() {
       db.messages.push(newMsg);
 
       if (isMongoConnected) {
-        MessageModel.create(newMsg).catch(err => console.error('MongoDB MessageModel.create error:', err));
+        MessageModel.create(newMsg).catch((err: any) => console.error('MongoDB MessageModel.create error:', err));
       }
 
       // Broadcast to channel or DM recipient
@@ -935,17 +986,78 @@ async function startAppServer() {
       callback?.({ success: true, message: newMsg });
     });
 
-    socket.on('chat:get_history', (data: { channelId?: string; recipientId?: string }, callback) => {
+    socket.on('chat:get_history', async (data: { channelId?: string; recipientId?: string }, callback) => {
+      const currentUserId = await getSocketUserId();
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
 
       let history: MessageStore[] = [];
       if (data.channelId) {
         history = db.messages.filter(m => m.channelId === data.channelId);
+        if (history.length === 0 && isMongoConnected) {
+          try {
+            const mongoMsgs = await MessageModel.find({ channelId: data.channelId }).lean();
+            if (mongoMsgs && mongoMsgs.length > 0) {
+              for (const m of mongoMsgs) {
+                if (!db.messages.some(existing => existing.id === m.id)) {
+                  db.messages.push({
+                    id: m.id,
+                    serverId: m.serverId,
+                    channelId: m.channelId,
+                    recipientId: m.recipientId,
+                    senderId: m.senderId,
+                    senderName: m.senderName,
+                    ciphertext: m.ciphertext,
+                    iv: m.iv,
+                    keyAlgorithm: m.keyAlgorithm || 'AES-GCM-256',
+                    timestamp: m.timestamp || new Date().toISOString(),
+                  });
+                }
+              }
+              history = db.messages.filter(m => m.channelId === data.channelId);
+            }
+          } catch (e) {
+            console.error('[MongoDB chat:get_history error]', e);
+          }
+        }
       } else if (data.recipientId) {
         history = db.messages.filter(
           m => (m.senderId === currentUserId && m.recipientId === data.recipientId) ||
                (m.senderId === data.recipientId && m.recipientId === currentUserId)
         );
+        if (history.length === 0 && isMongoConnected) {
+          try {
+            const mongoMsgs = await MessageModel.find({
+              $or: [
+                { senderId: currentUserId, recipientId: data.recipientId },
+                { senderId: data.recipientId, recipientId: currentUserId }
+              ]
+            }).lean();
+            if (mongoMsgs && mongoMsgs.length > 0) {
+              for (const m of mongoMsgs) {
+                if (!db.messages.some(existing => existing.id === m.id)) {
+                  db.messages.push({
+                    id: m.id,
+                    serverId: m.serverId,
+                    channelId: m.channelId,
+                    recipientId: m.recipientId,
+                    senderId: m.senderId,
+                    senderName: m.senderName,
+                    ciphertext: m.ciphertext,
+                    iv: m.iv,
+                    keyAlgorithm: m.keyAlgorithm || 'AES-GCM-256',
+                    timestamp: m.timestamp || new Date().toISOString(),
+                  });
+                }
+              }
+              history = db.messages.filter(
+                m => (m.senderId === currentUserId && m.recipientId === data.recipientId) ||
+                     (m.senderId === data.recipientId && m.recipientId === currentUserId)
+              );
+            }
+          } catch (e) {
+            console.error('[MongoDB chat:get_history DM error]', e);
+          }
+        }
       }
 
       callback?.({ success: true, history: history.slice(-100) });

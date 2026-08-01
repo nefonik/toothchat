@@ -680,9 +680,15 @@ export default function App() {
       ciphertext,
       iv,
       keyAlgorithm: 'AES-GCM-256',
-    }, (res: any) => {
+    }, async (res: any) => {
       if (!res?.success) {
         alert(`Błąd wysyłania: ${res?.error || 'Nieznany błąd'}`);
+      } else if (res.message) {
+        const decryptedMsg = await processDecryption(res.message);
+        setMessages(prev => {
+          if (prev.some(m => m.id === res.message.id)) return prev;
+          return [...prev, decryptedMsg];
+        });
       }
     });
   };
