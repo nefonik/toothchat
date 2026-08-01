@@ -35,32 +35,25 @@ export default async function handler(req: any, res: any) {
     const cleanToken = token.trim();
     const tokenHash = computeSha256(cleanToken);
 
-    const isMongoConnected = await connectToMongoDB();
+    await connectToMongoDB();
 
-    if (isMongoConnected) {
-      const user = await UserModel.findOne({ tokenHash });
-      if (!user) {
-        return res.status(401).json({
-          success: false,
-          error: 'Nieprawidłowy token konta. Użytkownik nie istnieje.',
-        });
-      }
-      return res.status(200).json({
-        success: true,
-        userId: user.id,
-        user: {
-          id: user.id,
-          displayName: user.displayName,
-          userTag: user.userTag,
-          status: user.status,
-          ecdhPublicKey: user.ecdhPublicKey,
-        },
+    const user = await UserModel.findOne({ tokenHash });
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Nieprawidłowy token konta. Użytkownik nie istnieje.',
       });
     }
-
-    return res.status(503).json({
-      success: false,
-      error: 'Brak połączenia z bazą danych MongoDB Atlas.',
+    return res.status(200).json({
+      success: true,
+      userId: user.id,
+      user: {
+        id: user.id,
+        displayName: user.displayName,
+        userTag: user.userTag,
+        status: user.status,
+        ecdhPublicKey: user.ecdhPublicKey,
+      },
     });
   } catch (err: any) {
     console.error('[API Login Error]:', err);

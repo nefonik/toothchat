@@ -46,17 +46,15 @@ export default async function handler(req: any, res: any) {
     const tokenHash = computeSha256(cleanToken);
 
     // 2. Połączenie z MongoDB z obsługą serverless cache
-    const isMongoConnected = await connectToMongoDB();
+    await connectToMongoDB();
 
-    if (isMongoConnected) {
-      // Sprawdzenie czy token już istnieje
-      const existingUser = await UserModel.findOne({ tokenHash });
-      if (existingUser) {
-        return res.status(409).json({
-          success: false,
-          error: 'Ten token jest już zarejestrowany. Skorzystaj z opcji logowania.',
-        });
-      }
+    // Sprawdzenie czy token już istnieje
+    const existingUser = await UserModel.findOne({ tokenHash });
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        error: 'Ten token jest już zarejestrowany. Skorzystaj z opcji logowania.',
+      });
     }
 
     // 3. Generowanie unikalnego ID i Tagu użytkownika
@@ -76,11 +74,7 @@ export default async function handler(req: any, res: any) {
     };
 
     // 4. Zapis w bazie danych
-    if (isMongoConnected) {
-      await UserModel.create(newUser);
-    } else {
-      console.warn('[Vercel Register] Brak połączenia z MongoDB, utworzono sesję tymczasową.');
-    }
+    await UserModel.create(newUser);
 
     return res.status(200).json({
       success: true,

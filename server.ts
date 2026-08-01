@@ -10,7 +10,7 @@ import {
   ServerModel,
   ChannelModel,
   MessageModel,
-} from './server/db';
+} from './api/_db.js';
 
 let isMongoConnected = false;
 
@@ -133,7 +133,12 @@ initializeDemoData();
 
 async function startAppServer() {
   // Connect to MongoDB Atlas
-  isMongoConnected = await connectToMongoDB();
+  try {
+    isMongoConnected = await connectToMongoDB();
+  } catch (err) {
+    console.error('[MongoDB Startup Error]', err);
+    isMongoConnected = false;
+  }
   if (isMongoConnected) {
     try {
       const users = await UserModel.find({});

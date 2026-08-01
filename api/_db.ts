@@ -79,10 +79,10 @@ export async function connectToMongoDB(): Promise<boolean> {
 
   if (!cached.promise) {
     const opts = {
-      bufferCommands: false,
+      dbName: 'toothchat',
+      bufferCommands: true,
       serverSelectionTimeoutMS: 5000,
       connectTimeoutMS: 5000,
-      family: 4,
       maxPoolSize: 10,
     };
 
