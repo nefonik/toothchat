@@ -247,6 +247,81 @@ async function startAppServer() {
     });
   });
 
+  // REST API: Register
+  app.post('/api/auth/register', (req, res) => {
+    try {
+      const { token, displayName, ecdhPublicKeyJwk } = req.body || {};
+      if (!token || !displayName || !ecdhPublicKeyJwk) {
+        return res.status(400).json({ success: false, error: 'Nieprawidłowe dane rejestracji' });
+      }
+
+      const tokenHash = computeSha256(token);
+      if (db.tokenHashMap.has(tokenHash)) {
+        return res.status(400).json({ success: false, error: 'Ten token jest już powiązany z kontem' });
+      }
+
+      const userId = 'usr_' + crypto.randomBytes(8).toString('hex');
+      const randomNum = Math.floor(1000 + Math.random() * 9000);
+      const userTag = `${displayName.trim()}#${randomNum}`;
+
+      const newUser: UserStore = {
+        id: userId,
+        tokenHash,
+        displayName: displayName.trim(),
+        userTag,
+        ecdhPublicKey: ecdhPublicKeyJwk,
+        status: 'online',
+        friends: [],
+        createdAt: new Date().toISOString(),
+      };
+
+      db.users.set(userId, newUser);
+      db.tokenHashMap.set(tokenHash, userId);
+
+      if (isMongoConnected) {
+        UserModel.create(newUser).catch(err => console.error('MongoDB UserModel.create error:', err));
+      }
+
+      // Auto-add to demo server
+      const genServer = db.servers.get('srv_general_01');
+      if (genServer) {
+        if (!genServer.members.some(m => m.userId === userId)) {
+          genServer.members.push({
+            userId,
+            role: 'member',
+            joinedAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      return res.json({ success: true, user: newUser });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Błąd serwera przy rejestracji' });
+    }
+  });
+
+  // REST API: Login
+  app.post('/api/auth/login', (req, res) => {
+    try {
+      const { token } = req.body || {};
+      if (!token) {
+        return res.status(400).json({ success: false, error: 'Wymagany token' });
+      }
+
+      const tokenHash = computeSha256(token);
+      const userId = db.tokenHashMap.get(tokenHash);
+
+      if (!userId) {
+        return res.status(400).json({ success: false, error: 'Nieprawidłowy token konta. Sprawdź wpisany token.' });
+      }
+
+      const user = db.users.get(userId);
+      return res.json({ success: true, userId, user });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Błąd logowania' });
+    }
+  });
+
   // ==========================================
   // SOCKET.IO REAL-TIME SIGNALING & MESSAGING
   // ==========================================

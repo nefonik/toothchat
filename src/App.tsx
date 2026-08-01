@@ -364,6 +364,26 @@ export default function App() {
       }
       const pubJwk = await exportPublicKeyJwk(pair.publicKey);
 
+      // 1. HTTP REST Endpoint (Fast, Direct, Bulletproof)
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, displayName, ecdhPublicKeyJwk: pubJwk }),
+        });
+        const data = await res.json();
+        if (res.ok && data?.success) {
+          localStorage.setItem('toothchat_token', token);
+          setAuthToken(token);
+          return { success: true };
+        } else if (data?.error) {
+          return { success: false, error: data.error };
+        }
+      } catch (httpErr) {
+        console.warn('HTTP register failed, falling back to Socket.io:', httpErr);
+      }
+
+      // 2. Socket.io fallback
       return new Promise<{ success: boolean; error?: string }>((resolve) => {
         const socket = io();
 
@@ -392,6 +412,26 @@ export default function App() {
 
   const handleLogin = async (token: string) => {
     try {
+      // 1. HTTP REST Endpoint (Fast, Direct, Bulletproof)
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        const data = await res.json();
+        if (res.ok && data?.success) {
+          localStorage.setItem('toothchat_token', token);
+          setAuthToken(token);
+          return { success: true };
+        } else if (data?.error) {
+          return { success: false, error: data.error };
+        }
+      } catch (httpErr) {
+        console.warn('HTTP login failed, falling back to Socket.io:', httpErr);
+      }
+
+      // 2. Socket.io fallback
       return new Promise<{ success: boolean; error?: string }>((resolve) => {
         const socket = io();
 

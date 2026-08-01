@@ -71,11 +71,11 @@ export async function connectToMongoDB() {
   }
 
   try {
-    await mongoose.connect(mongoUri);
+    await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 4000 });
     console.log('Successfully connected to MongoDB Atlas!');
     return true;
-  } catch (err) {
-    console.error('Failed to connect to MongoDB Atlas:', err);
+  } catch (err: any) {
+    console.error('Failed to connect to MongoDB Atlas (running in in-memory fallback):', err?.message || err);
     return false;
   }
 }
