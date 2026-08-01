@@ -371,13 +371,16 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token, displayName, ecdhPublicKeyJwk: pubJwk }),
         });
-        const data = await res.json();
-        if (res.ok && data?.success) {
-          localStorage.setItem('toothchat_token', token);
-          setAuthToken(token);
-          return { success: true };
-        } else if (data?.error) {
-          return { success: false, error: data.error };
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (res.ok && data?.success) {
+            localStorage.setItem('toothchat_token', token);
+            setAuthToken(token);
+            return { success: true };
+          } else if (data?.error) {
+            return { success: false, error: data.error };
+          }
         }
       } catch (httpErr) {
         console.warn('HTTP register failed, falling back to Socket.io:', httpErr);
@@ -419,13 +422,16 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token }),
         });
-        const data = await res.json();
-        if (res.ok && data?.success) {
-          localStorage.setItem('toothchat_token', token);
-          setAuthToken(token);
-          return { success: true };
-        } else if (data?.error) {
-          return { success: false, error: data.error };
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (res.ok && data?.success) {
+            localStorage.setItem('toothchat_token', token);
+            setAuthToken(token);
+            return { success: true };
+          } else if (data?.error) {
+            return { success: false, error: data.error };
+          }
         }
       } catch (httpErr) {
         console.warn('HTTP login failed, falling back to Socket.io:', httpErr);
