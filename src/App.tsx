@@ -197,9 +197,14 @@ export default function App() {
   useEffect(() => {
     if (!authToken) return;
 
-    // Connect Socket.io
-    const socket = io({
+    // Connect Socket.io to external backend URL or current origin
+    const socketUrl = (import.meta as any).env?.VITE_SOCKET_URL || window.location.origin;
+    const socket = io(socketUrl, {
       auth: { token: authToken },
+      query: { token: authToken },
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 10,
     });
     socketRef.current = socket;
 
