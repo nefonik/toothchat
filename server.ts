@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import path from 'path';
 import crypto from 'crypto';
+import mongoose from 'mongoose';
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { createServer as createViteServer } from 'vite';
 import {
@@ -131,10 +132,27 @@ function initializeDemoData() {
 
 initializeDemoData();
 
+// Helper to ensure MongoDB Atlas is connected
+async function ensureMongoConnected(): Promise<boolean> {
+  if (mongoose.connection.readyState === 1) {
+    isMongoConnected = true;
+    return true;
+  }
+  try {
+    const ok = await connectToMongoDB();
+    isMongoConnected = ok;
+    return ok;
+  } catch (err) {
+    console.error('[MongoDB ensureMongoConnected Error]', err);
+    isMongoConnected = false;
+    return false;
+  }
+}
+
 async function startAppServer() {
   // Connect to MongoDB Atlas
   try {
-    isMongoConnected = await connectToMongoDB();
+    isMongoConnected = await ensureMongoConnected();
   } catch (err) {
     console.error('[MongoDB Startup Error]', err);
     isMongoConnected = false;
@@ -191,20 +209,22 @@ async function startAppServer() {
         }
       }
 
-      const msgs = await MessageModel.find({}).sort({ timestamp: 1 }).limit(1000);
+      const msgs = await MessageModel.find({}).sort({ timestamp: 1 }).limit(2000);
       for (const m of msgs) {
-        db.messages.push({
-          id: m.id,
-          serverId: m.serverId,
-          channelId: m.channelId,
-          recipientId: m.recipientId,
-          senderId: m.senderId,
-          senderName: m.senderName,
-          ciphertext: m.ciphertext,
-          iv: m.iv,
-          keyAlgorithm: m.keyAlgorithm || 'AES-GCM-256',
-          timestamp: m.timestamp || new Date().toISOString(),
-        });
+        if (!db.messages.some(ex => ex.id === m.id)) {
+          db.messages.push({
+            id: m.id,
+            serverId: m.serverId,
+            channelId: m.channelId,
+            recipientId: m.recipientId,
+            senderId: m.senderId,
+            senderName: m.senderName,
+            ciphertext: m.ciphertext,
+            iv: m.iv,
+            keyAlgorithm: m.keyAlgorithm || 'AES-GCM-256',
+            timestamp: m.timestamp || new Date().toISOString(),
+          });
+        }
       }
       console.log(`[MongoDB Sync] Synchronized ${users.length} users, ${servers.length} servers, ${msgs.length} messages from Atlas.`);
     } catch (loadErr) {
@@ -222,13 +242,15 @@ async function startAppServer() {
   app.use(express.json());
 
   // API Health Endpoint
-  app.get('/api/health', (req, res) => {
+  app.get('/api/health', async (req, res) => {
+    const mongoOk = await ensureMongoConnected();
     res.json({
       status: 'ok',
-      mongoDbConnected: isMongoConnected,
+      mongoDbConnected: mongoOk,
       activeUsers: db.users.size,
       onlineUsers: db.socketUserMap.size,
       activeServers: db.servers.size,
+      totalMessages: db.messages.length,
       security: 'Zero-Knowledge E2EE Active',
       timestamp: new Date().toISOString(),
     });
@@ -253,7 +275,7 @@ async function startAppServer() {
   });
 
   // REST API: Register
-  app.post('/api/auth/register', (req, res) => {
+  app.post('/api/auth/register', async (req, res) => {
     try {
       const { token, displayName, ecdhPublicKeyJwk } = req.body || {};
       if (!token || !displayName || !ecdhPublicKeyJwk) {
@@ -283,8 +305,14 @@ async function startAppServer() {
       db.users.set(userId, newUser);
       db.tokenHashMap.set(tokenHash, userId);
 
-      if (isMongoConnected) {
-        UserModel.create(newUser).catch(err => console.error('MongoDB UserModel.create error:', err));
+      const hasMongo = await ensureMongoConnected();
+      if (hasMongo) {
+        try {
+          await UserModel.create(newUser);
+          console.log('[MongoDB Atlas] Saved new user:', newUser.id);
+        } catch (err) {
+          console.error('MongoDB UserModel.create error:', err);
+        }
       }
 
       // Auto-add to demo server
@@ -313,7 +341,8 @@ async function startAppServer() {
       if (u) return u;
     }
 
-    if (isMongoConnected) {
+    const hasMongo = await ensureMongoConnected();
+    if (hasMongo) {
       try {
         const u = await UserModel.findOne({ tokenHash });
         if (u) {
@@ -363,7 +392,7 @@ async function startAppServer() {
       genServer.members.push({ userId, role: 'member', joinedAt: new Date().toISOString() });
     }
 
-    if (isMongoConnected) {
+    if (hasMongo) {
       UserModel.create(autoUser).catch((err: any) => console.error('MongoDB autoUser create error:', err));
     }
 
@@ -947,8 +976,9 @@ async function startAppServer() {
       const currentUserId = await getSocketUserId();
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
 
+      const hasMongo = await ensureMongoConnected();
       let sender = db.users.get(currentUserId);
-      if (!sender && isMongoConnected) {
+      if (!sender && hasMongo) {
         try {
           const mu = await UserModel.findOne({ id: currentUserId });
           if (mu) {
@@ -975,10 +1005,13 @@ async function startAppServer() {
         return callback?.({ success: false, error: 'Brak zaszyfrowanego ładunku (ciphertext)' });
       }
 
+      const channelId = data.channelId || (data.recipientId ? undefined : 'chn_general_text');
+      const serverId = data.serverId || (channelId ? 'srv_general_01' : undefined);
+
       const newMsg: MessageStore = {
         id: 'msg_' + crypto.randomBytes(8).toString('hex'),
-        serverId: data.serverId,
-        channelId: data.channelId,
+        serverId,
+        channelId,
         recipientId: data.recipientId,
         senderId: currentUserId,
         senderName: sender.displayName,
@@ -988,16 +1021,24 @@ async function startAppServer() {
         timestamp: new Date().toISOString(),
       };
 
-      db.messages.push(newMsg);
+      if (!db.messages.some(m => m.id === newMsg.id)) {
+        db.messages.push(newMsg);
+      }
 
-      if (isMongoConnected) {
-        MessageModel.create(newMsg).catch((err: any) => console.error('MongoDB MessageModel.create error:', err));
+      if (hasMongo) {
+        try {
+          await MessageModel.create(newMsg);
+          console.log('[MongoDB Atlas] Saved message:', newMsg.id, 'channel:', channelId, 'recipient:', data.recipientId);
+        } catch (err: any) {
+          console.error('[MongoDB Message Storage Error]', err?.message || err);
+        }
       }
 
       // Broadcast to channel or DM recipient
-      if (data.channelId) {
-        io.emit(`chat:channel:${data.channelId}`, newMsg);
-      } else if (data.recipientId) {
+      if (channelId) {
+        io.emit(`chat:channel:${channelId}`, newMsg);
+      }
+      if (data.recipientId) {
         // Send to recipient
         const targetSocketId = db.userSocketMap.get(data.recipientId);
         if (targetSocketId) {
@@ -1014,12 +1055,14 @@ async function startAppServer() {
       const currentUserId = await getSocketUserId();
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
 
+      const hasMongo = await ensureMongoConnected();
       let history: MessageStore[] = [];
-      if (data.channelId) {
-        history = db.messages.filter(m => m.channelId === data.channelId);
-        if (history.length === 0 && isMongoConnected) {
+      const targetChannelId = data.channelId || (data.recipientId ? undefined : 'chn_general_text');
+
+      if (targetChannelId) {
+        if (hasMongo) {
           try {
-            const mongoMsgs = await MessageModel.find({ channelId: data.channelId }).lean();
+            const mongoMsgs = await MessageModel.find({ channelId: targetChannelId }).lean();
             if (mongoMsgs && mongoMsgs.length > 0) {
               for (const m of mongoMsgs) {
                 if (!db.messages.some(existing => existing.id === m.id)) {
@@ -1037,18 +1080,14 @@ async function startAppServer() {
                   });
                 }
               }
-              history = db.messages.filter(m => m.channelId === data.channelId);
             }
           } catch (e) {
             console.error('[MongoDB chat:get_history error]', e);
           }
         }
+        history = db.messages.filter(m => m.channelId === targetChannelId);
       } else if (data.recipientId) {
-        history = db.messages.filter(
-          m => (m.senderId === currentUserId && m.recipientId === data.recipientId) ||
-               (m.senderId === data.recipientId && m.recipientId === currentUserId)
-        );
-        if (history.length === 0 && isMongoConnected) {
+        if (hasMongo) {
           try {
             const mongoMsgs = await MessageModel.find({
               $or: [
@@ -1073,18 +1112,20 @@ async function startAppServer() {
                   });
                 }
               }
-              history = db.messages.filter(
-                m => (m.senderId === currentUserId && m.recipientId === data.recipientId) ||
-                     (m.senderId === data.recipientId && m.recipientId === currentUserId)
-              );
             }
           } catch (e) {
             console.error('[MongoDB chat:get_history DM error]', e);
           }
         }
+        history = db.messages.filter(
+          m => (m.senderId === currentUserId && m.recipientId === data.recipientId) ||
+               (m.senderId === data.recipientId && m.recipientId === currentUserId)
+        );
       }
 
-      callback?.({ success: true, history: history.slice(-100) });
+      history.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+      callback?.({ success: true, history: history.slice(-200) });
     });
 
     // ==========================================

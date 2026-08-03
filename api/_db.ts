@@ -2,10 +2,10 @@ import mongoose from 'mongoose';
 
 // MongoDB Schemas
 const UserSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
+  id: { type: String, required: true, unique: true, index: true },
   tokenHash: { type: String, required: true, unique: true, index: true },
   displayName: { type: String, required: true },
-  userTag: { type: String, required: true, unique: true },
+  userTag: { type: String, required: true, index: true },
   ecdhPublicKey: { type: String, required: true },
   status: { type: String, default: 'offline' },
   friends: [
@@ -19,8 +19,8 @@ const UserSchema = new mongoose.Schema({
 });
 
 const ChannelSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  serverId: { type: String },
+  id: { type: String, required: true, unique: true, index: true },
+  serverId: { type: String, index: true },
   name: { type: String, required: true },
   type: { type: String, required: true },
   topic: { type: String },
@@ -29,7 +29,7 @@ const ChannelSchema = new mongoose.Schema({
 });
 
 const ServerSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
+  id: { type: String, required: true, unique: true, index: true },
   name: { type: String, required: true },
   icon: { type: String, default: '🛡️' },
   ownerId: { type: String, required: true },
@@ -46,11 +46,11 @@ const ServerSchema = new mongoose.Schema({
 });
 
 const MessageSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  serverId: { type: String },
-  channelId: { type: String },
-  recipientId: { type: String },
-  senderId: { type: String, required: true },
+  id: { type: String, required: true, unique: true, index: true },
+  serverId: { type: String, index: true },
+  channelId: { type: String, index: true },
+  recipientId: { type: String, index: true },
+  senderId: { type: String, required: true, index: true },
   senderName: { type: String, required: true },
   ciphertext: { type: String, required: true },
   iv: { type: String, required: true },
@@ -81,8 +81,8 @@ export async function connectToMongoDB(): Promise<boolean> {
     const opts = {
       dbName: 'toothchat',
       bufferCommands: true,
-      serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 8000,
+      connectTimeoutMS: 8000,
       maxPoolSize: 10,
     };
 
@@ -91,12 +91,13 @@ export async function connectToMongoDB(): Promise<boolean> {
 
   try {
     cached.conn = await cached.promise;
-    console.log('MongoDB Connected successfully');
+    console.log('[MongoDB Atlas] Connected successfully');
     return true;
   } catch (e: any) {
-    console.error('MongoDB Connection Error:', e?.message || e);
+    console.error('[MongoDB Connection Error]', e?.message || e);
     cached.promise = null;
     cached.conn = null;
     return false;
   }
 }
+
