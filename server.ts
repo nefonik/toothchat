@@ -159,6 +159,24 @@ async function startAppServer() {
   }
   if (isMongoConnected) {
     try {
+      // 1. Ensure Demo Server and its default channels are persisted to MongoDB Atlas
+      const defaultServer = db.servers.get('srv_general_01');
+      if (defaultServer) {
+        await ServerModel.findOneAndUpdate(
+          { id: 'srv_general_01' },
+          defaultServer,
+          { upsert: true, new: true }
+        );
+        for (const ch of defaultServer.channels) {
+          await ChannelModel.findOneAndUpdate(
+            { id: ch.id },
+            ch,
+            { upsert: true, new: true }
+          );
+        }
+      }
+
+      // 2. Load users from MongoDB Atlas
       const users = await UserModel.find({});
       for (const u of users) {
         const uObj: UserStore = {
@@ -179,6 +197,22 @@ async function startAppServer() {
         db.tokenHashMap.set(u.tokenHash, u.id);
       }
 
+      // 3. Load channels from MongoDB Atlas
+      const dbChannels = await ChannelModel.find({});
+      for (const ch of dbChannels) {
+        const chObj: ChannelStore = {
+          id: ch.id,
+          serverId: ch.serverId,
+          name: ch.name,
+          type: ch.type as any,
+          topic: ch.topic,
+          createdBy: ch.createdBy,
+          createdAt: ch.createdAt || new Date().toISOString(),
+        };
+        db.channels.set(ch.id, chObj);
+      }
+
+      // 4. Load servers from MongoDB Atlas
       const servers = await ServerModel.find({});
       for (const s of servers) {
         const sObj: ServerStore = {
@@ -209,6 +243,7 @@ async function startAppServer() {
         }
       }
 
+      // 5. Load messages from MongoDB Atlas
       const msgs = await MessageModel.find({}).sort({ timestamp: 1 }).limit(2000);
       for (const m of msgs) {
         if (!db.messages.some(ex => ex.id === m.id)) {
@@ -226,7 +261,7 @@ async function startAppServer() {
           });
         }
       }
-      console.log(`[MongoDB Sync] Synchronized ${users.length} users, ${servers.length} servers, ${msgs.length} messages from Atlas.`);
+      console.log(`[MongoDB Sync] Synchronized ${users.length} users, ${servers.length} servers, ${dbChannels.length} channels, ${msgs.length} messages from Atlas.`);
     } catch (loadErr) {
       console.error('[MongoDB Sync Error]', loadErr);
     }
@@ -671,7 +706,7 @@ async function startAppServer() {
     });
 
     // 3. EDIT PROFILE (Change Display Name without changing keys/token)
-    socket.on('user:update_profile', (data: { displayName: string }, callback) => {
+    socket.on('user:update_profile', async (data: { displayName: string }, callback) => {
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       const user = db.users.get(currentUserId);
       if (!user) return callback?.({ success: false, error: 'Nie znaleziono użytkownika' });
@@ -684,8 +719,18 @@ async function startAppServer() {
       user.displayName = data.displayName.trim();
       user.userTag = `${user.displayName}#${tagNumber}`;
 
-      if (isMongoConnected) {
-        UserModel.updateOne({ id: user.id }, { displayName: user.displayName, userTag: user.userTag }).catch(err => console.error('MongoDB profile update error:', err));
+      const hasMongo = await ensureMongoConnected();
+      if (hasMongo) {
+        try {
+          await UserModel.findOneAndUpdate(
+            { id: user.id },
+            { displayName: user.displayName, userTag: user.userTag },
+            { upsert: true, new: true }
+          );
+          console.log('[MongoDB Atlas] Saved profile update for user:', user.id);
+        } catch (err) {
+          console.error('[MongoDB profile update error]', err);
+        }
       }
 
       sendUserState(currentUserId);
@@ -707,8 +752,9 @@ async function startAppServer() {
         return callback?.({ success: false, error: 'Nie możesz wysłać zaproszenia do samego siebie' });
       }
 
+      const hasMongo = await ensureMongoConnected();
       let targetUser = Array.from(db.users.values()).find(u => u.userTag.toLowerCase() === targetTag.toLowerCase());
-      if (!targetUser && isMongoConnected) {
+      if (!targetUser && hasMongo) {
         try {
           const escapedTag = targetTag.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
           const mongoUser = await UserModel.findOne({ userTag: { $regex: new RegExp(`^${escapedTag}$`, 'i') } });
@@ -761,9 +807,14 @@ async function startAppServer() {
         existingInTarget.status = 'pending_received';
       }
 
-      if (isMongoConnected) {
-        UserModel.updateOne({ id: currentUser.id }, { friends: currentUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
-        UserModel.updateOne({ id: targetUser.id }, { friends: targetUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+      if (hasMongo) {
+        try {
+          await UserModel.findOneAndUpdate({ id: currentUser.id }, { $set: { friends: currentUser.friends } }, { upsert: true });
+          await UserModel.findOneAndUpdate({ id: targetUser.id }, { $set: { friends: targetUser.friends } }, { upsert: true });
+          console.log('[MongoDB Atlas] Saved friend request relation between:', currentUser.id, 'and', targetUser.id);
+        } catch (err) {
+          console.error('[MongoDB friend:request save error]', err);
+        }
       }
 
       await sendUserState(currentUser.id);
@@ -787,9 +838,10 @@ async function startAppServer() {
     socket.on('friend:accept', async (data: { targetUserId: string }, callback) => {
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       const currentUser = db.users.get(currentUserId);
+      const hasMongo = await ensureMongoConnected();
       let targetUser = db.users.get(data.targetUserId);
 
-      if (!targetUser && isMongoConnected) {
+      if (!targetUser && hasMongo) {
         try {
           const mongoUser = await UserModel.findOne({ id: data.targetUserId });
           if (mongoUser) {
@@ -825,9 +877,14 @@ async function startAppServer() {
       if (relTarget) relTarget.status = 'accepted';
       else targetUser.friends.push({ userId: currentUser.id, status: 'accepted', updatedAt: new Date().toISOString() });
 
-      if (isMongoConnected) {
-        UserModel.updateOne({ id: currentUser.id }, { friends: currentUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
-        UserModel.updateOne({ id: targetUser.id }, { friends: targetUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+      if (hasMongo) {
+        try {
+          await UserModel.findOneAndUpdate({ id: currentUser.id }, { $set: { friends: currentUser.friends } }, { upsert: true });
+          await UserModel.findOneAndUpdate({ id: targetUser.id }, { $set: { friends: targetUser.friends } }, { upsert: true });
+          console.log('[MongoDB Atlas] Saved accepted friend relation between:', currentUser.id, 'and', targetUser.id);
+        } catch (err) {
+          console.error('[MongoDB friend:accept save error]', err);
+        }
       }
 
       await sendUserState(currentUser.id);
@@ -843,20 +900,29 @@ async function startAppServer() {
     socket.on('friend:decline', async (data: { targetUserId: string }, callback) => {
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       const currentUser = db.users.get(currentUserId);
+      const hasMongo = await ensureMongoConnected();
       let targetUser = db.users.get(data.targetUserId);
 
       if (currentUser) {
         currentUser.friends = currentUser.friends.filter(f => f.userId !== data.targetUserId);
-        if (isMongoConnected) {
-          UserModel.updateOne({ id: currentUser.id }, { friends: currentUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+        if (hasMongo) {
+          try {
+            await UserModel.findOneAndUpdate({ id: currentUser.id }, { $set: { friends: currentUser.friends } }, { upsert: true });
+          } catch (err) {
+            console.error('[MongoDB friend:decline save error]', err);
+          }
         }
         await sendUserState(currentUser.id);
       }
 
       if (targetUser) {
         targetUser.friends = targetUser.friends.filter(f => f.userId !== currentUserId);
-        if (isMongoConnected) {
-          UserModel.updateOne({ id: targetUser.id }, { friends: targetUser.friends }).catch(err => console.error('MongoDB friends update error:', err));
+        if (hasMongo) {
+          try {
+            await UserModel.findOneAndUpdate({ id: targetUser.id }, { $set: { friends: targetUser.friends } }, { upsert: true });
+          } catch (err) {
+            console.error('[MongoDB friend:decline save error]', err);
+          }
         }
         const targetSocketId = db.userSocketMap.get(targetUser.id);
         if (targetSocketId) await sendUserState(targetUser.id);
@@ -866,7 +932,7 @@ async function startAppServer() {
     });
 
     // 5. SERVER / GROUP CREATION WITH DEFAULT CHANNELS
-    socket.on('server:create', (data: { name: string; icon?: string }, callback) => {
+    socket.on('server:create', async (data: { name: string; icon?: string }, callback) => {
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       if (!data.name || data.name.trim().length < 2) {
         return callback?.({ success: false, error: 'Nazwa grupy musi mieć co najmniej 2 znaki' });
@@ -916,8 +982,16 @@ async function startAppServer() {
       db.channels.set(textChId, textChannel);
       db.channels.set(voiceChId, voiceChannel);
 
-      if (isMongoConnected) {
-        ServerModel.create(newServer).catch(err => console.error('MongoDB ServerModel.create error:', err));
+      const hasMongo = await ensureMongoConnected();
+      if (hasMongo) {
+        try {
+          await ServerModel.findOneAndUpdate({ id: serverId }, newServer, { upsert: true, new: true });
+          await ChannelModel.findOneAndUpdate({ id: textChId }, textChannel, { upsert: true, new: true });
+          await ChannelModel.findOneAndUpdate({ id: voiceChId }, voiceChannel, { upsert: true, new: true });
+          console.log('[MongoDB Atlas] Saved new server and default channels:', serverId);
+        } catch (err) {
+          console.error('[MongoDB server:create error]', err);
+        }
       }
 
       sendUserState(currentUserId);
@@ -925,7 +999,7 @@ async function startAppServer() {
     });
 
     // 5b. CREATE CHANNEL ON A SERVER (TEXT OR VOICE)
-    socket.on('channel:create', (data: { serverId: string; name: string; type: 'text' | 'voice'; topic?: string }, callback) => {
+    socket.on('channel:create', async (data: { serverId: string; name: string; type: 'text' | 'voice'; topic?: string }, callback) => {
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       if (!data.serverId || !data.name || data.name.trim().length < 1) {
         return callback?.({ success: false, error: 'Nazwa kanału jest wymagana' });
@@ -951,9 +1025,15 @@ async function startAppServer() {
       serverObj.channels.push(newChannel);
       db.channels.set(channelId, newChannel);
 
-      if (isMongoConnected) {
-        ServerModel.updateOne({ id: data.serverId }, { channels: serverObj.channels })
-          .catch(err => console.error('MongoDB channel creation update error:', err));
+      const hasMongo = await ensureMongoConnected();
+      if (hasMongo) {
+        try {
+          await ChannelModel.findOneAndUpdate({ id: channelId }, newChannel, { upsert: true, new: true });
+          await ServerModel.findOneAndUpdate({ id: data.serverId }, { $set: { channels: serverObj.channels } }, { upsert: true, new: true });
+          console.log('[MongoDB Atlas] Saved channel:', channelId, 'to server:', data.serverId);
+        } catch (err) {
+          console.error('[MongoDB channel:create error]', err);
+        }
       }
 
       // Refresh state for all online users connected to this server or room
