@@ -49,9 +49,10 @@ export interface EncryptedMessage {
   recipientId?: string;
   senderId: string;
   senderName: string;
-  ciphertext: string; // Base64 ciphertext
-  iv: string; // Base64 initialization vector
-  keyAlgorithm: string; // e.g. "AES-GCM-256"
+  text?: string;
+  ciphertext?: string; // Base64 ciphertext
+  iv?: string; // Base64 initialization vector
+  keyAlgorithm?: string; // e.g. "AES-GCM-256"
   timestamp: string;
 }
 

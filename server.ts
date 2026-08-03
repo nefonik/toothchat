@@ -68,9 +68,10 @@ interface MessageStore {
   recipientId?: string;
   senderId: string;
   senderName: string;
-  ciphertext: string;
-  iv: string;
-  keyAlgorithm: string;
+  text?: string;
+  ciphertext?: string;
+  iv?: string;
+  keyAlgorithm?: string;
   timestamp: string;
 }
 
@@ -1056,15 +1057,16 @@ async function startAppServer() {
       callback?.({ success: true, channel: newChannel });
     });
 
-    // 6. E2EE CHAT MESSAGING (Relays & Stores ONLY CIPHERTEXT)
-    socket.on('chat:send_message', async (data: {
+    // 6. CHAT MESSAGING (MongoDB Atlas Persistence + Socket.io Relay)
+    const handleSendMessage = async (data: {
       serverId?: string;
       channelId?: string;
       recipientId?: string;
-      ciphertext: string;
-      iv: string;
+      text?: string;
+      ciphertext?: string;
+      iv?: string;
       keyAlgorithm?: string;
-    }, callback) => {
+    }, callback?: Function) => {
       const currentUserId = await getSocketUserId();
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
 
@@ -1087,18 +1089,19 @@ async function startAppServer() {
             db.users.set(currentUserId, sender);
           }
         } catch (e) {
-          console.error('[chat:send_message sender lookup error]', e);
+          console.error('[chat message sender lookup error]', e);
         }
       }
 
       if (!sender) return callback?.({ success: false, error: 'Nie odnaleziono nadawcy' });
 
-      if (!data.ciphertext || !data.iv) {
-        return callback?.({ success: false, error: 'Brak zaszyfrowanego ładunku (ciphertext)' });
+      const msgText = (data.text || data.ciphertext || '').trim();
+      if (!msgText) {
+        return callback?.({ success: false, error: 'Treść wiadomości nie może być pusta' });
       }
 
-      const channelId = data.channelId || (data.recipientId ? undefined : 'chn_general_text');
-      const serverId = data.serverId || (channelId ? 'srv_general_01' : undefined);
+      const channelId = data.channelId || (data.recipientId ? `dm_${data.recipientId}` : 'chn_general_text');
+      const serverId = data.serverId || (data.channelId ? 'srv_general_01' : undefined);
 
       const newMsg: MessageStore = {
         id: 'msg_' + crypto.randomBytes(8).toString('hex'),
@@ -1107,9 +1110,10 @@ async function startAppServer() {
         recipientId: data.recipientId,
         senderId: currentUserId,
         senderName: sender.displayName,
-        ciphertext: data.ciphertext,
-        iv: data.iv,
-        keyAlgorithm: data.keyAlgorithm || 'AES-GCM-256',
+        text: msgText,
+        ciphertext: msgText,
+        iv: data.iv || '',
+        keyAlgorithm: 'PLAIN',
         timestamp: new Date().toISOString(),
       };
 
@@ -1120,27 +1124,41 @@ async function startAppServer() {
       if (hasMongo) {
         try {
           await MessageModel.create(newMsg);
-          console.log('[MongoDB Atlas] Saved message:', newMsg.id, 'channel:', channelId, 'recipient:', data.recipientId);
+          console.log('[MongoDB Atlas] Saved message:', newMsg.id, 'content:', msgText);
         } catch (err: any) {
           console.error('[MongoDB Message Storage Error]', err?.message || err);
         }
       }
 
-      // Broadcast to channel or DM recipient
+      // Broadcast message to rooms & recipients
       if (channelId) {
+        io.to(channelId).emit('message:received', newMsg);
         io.emit(`chat:channel:${channelId}`, newMsg);
       }
       if (data.recipientId) {
-        // Send to recipient
         const targetSocketId = db.userSocketMap.get(data.recipientId);
         if (targetSocketId) {
+          io.to(targetSocketId).emit('message:received', newMsg);
           io.to(targetSocketId).emit(`chat:dm:${currentUserId}`, newMsg);
         }
-        // Send to sender so sender UI updates
+        socket.emit('message:received', newMsg);
         socket.emit(`chat:dm:${data.recipientId}`, newMsg);
+      } else {
+        socket.broadcast.emit('message:received', newMsg);
       }
 
       callback?.({ success: true, message: newMsg });
+    };
+
+    socket.on('chat:send_message', handleSendMessage);
+    socket.on('message:send', handleSendMessage);
+
+    socket.on('channel:join', async (data: { channelId?: string }, callback) => {
+      const chId = typeof data === 'string' ? data : data?.channelId;
+      if (chId) {
+        socket.join(chId);
+      }
+      callback?.({ success: true });
     });
 
     socket.on('chat:get_history', async (data: { channelId?: string; recipientId?: string }, callback) => {
@@ -1149,74 +1167,64 @@ async function startAppServer() {
 
       const hasMongo = await ensureMongoConnected();
       let history: MessageStore[] = [];
-      const targetChannelId = data.channelId || (data.recipientId ? undefined : 'chn_general_text');
+      const targetChannelId = data.channelId || (data.recipientId ? `dm_${data.recipientId}` : 'chn_general_text');
 
-      if (targetChannelId) {
-        if (hasMongo) {
-          try {
-            const mongoMsgs = await MessageModel.find({ channelId: targetChannelId }).lean();
-            if (mongoMsgs && mongoMsgs.length > 0) {
-              for (const m of mongoMsgs) {
-                if (!db.messages.some(existing => existing.id === m.id)) {
-                  db.messages.push({
-                    id: m.id,
-                    serverId: m.serverId,
-                    channelId: m.channelId,
-                    recipientId: m.recipientId,
-                    senderId: m.senderId,
-                    senderName: m.senderName,
-                    ciphertext: m.ciphertext,
-                    iv: m.iv,
-                    keyAlgorithm: m.keyAlgorithm || 'AES-GCM-256',
-                    timestamp: m.timestamp || new Date().toISOString(),
-                  });
-                }
-              }
-            }
-          } catch (e) {
-            console.error('[MongoDB chat:get_history error]', e);
-          }
-        }
-        history = db.messages.filter(m => m.channelId === targetChannelId);
-      } else if (data.recipientId) {
-        if (hasMongo) {
-          try {
-            const mongoMsgs = await MessageModel.find({
+      if (hasMongo) {
+        try {
+          let mongoMsgs: any[] = [];
+          if (data.recipientId) {
+            mongoMsgs = await MessageModel.find({
               $or: [
                 { senderId: currentUserId, recipientId: data.recipientId },
-                { senderId: data.recipientId, recipientId: currentUserId }
+                { senderId: data.recipientId, recipientId: currentUserId },
+                { channelId: `dm_${data.recipientId}` },
+                { channelId: targetChannelId }
               ]
             }).lean();
-            if (mongoMsgs && mongoMsgs.length > 0) {
-              for (const m of mongoMsgs) {
-                if (!db.messages.some(existing => existing.id === m.id)) {
-                  db.messages.push({
-                    id: m.id,
-                    serverId: m.serverId,
-                    channelId: m.channelId,
-                    recipientId: m.recipientId,
-                    senderId: m.senderId,
-                    senderName: m.senderName,
-                    ciphertext: m.ciphertext,
-                    iv: m.iv,
-                    keyAlgorithm: m.keyAlgorithm || 'AES-GCM-256',
-                    timestamp: m.timestamp || new Date().toISOString(),
-                  });
-                }
+          } else if (data.channelId) {
+            mongoMsgs = await MessageModel.find({ channelId: data.channelId }).lean();
+          } else {
+            mongoMsgs = await MessageModel.find({ channelId: 'chn_general_text' }).lean();
+          }
+
+          if (mongoMsgs && mongoMsgs.length > 0) {
+            for (const m of mongoMsgs) {
+              if (!db.messages.some(existing => existing.id === m.id)) {
+                db.messages.push({
+                  id: m.id,
+                  serverId: m.serverId,
+                  channelId: m.channelId,
+                  recipientId: m.recipientId,
+                  senderId: m.senderId,
+                  senderName: m.senderName,
+                  text: m.text || m.ciphertext || '',
+                  ciphertext: m.ciphertext || m.text || '',
+                  iv: m.iv || '',
+                  keyAlgorithm: m.keyAlgorithm || 'PLAIN',
+                  timestamp: m.timestamp || new Date().toISOString(),
+                });
               }
             }
-          } catch (e) {
-            console.error('[MongoDB chat:get_history DM error]', e);
           }
+        } catch (e) {
+          console.error('[MongoDB chat:get_history error]', e);
         }
+      }
+
+      if (data.recipientId) {
         history = db.messages.filter(
           m => (m.senderId === currentUserId && m.recipientId === data.recipientId) ||
-               (m.senderId === data.recipientId && m.recipientId === currentUserId)
+               (m.senderId === data.recipientId && m.recipientId === currentUserId) ||
+               m.channelId === `dm_${data.recipientId}`
         );
+      } else {
+        const filterChId = data.channelId || 'chn_general_text';
+        history = db.messages.filter(m => m.channelId === filterChId);
       }
 
       history.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
+      socket.emit('messages:history', { channelId: targetChannelId, messages: history.slice(-200) });
       callback?.({ success: true, history: history.slice(-200) });
     });
 

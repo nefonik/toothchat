@@ -52,9 +52,10 @@ const MessageSchema = new mongoose.Schema({
   recipientId: { type: String, index: true },
   senderId: { type: String, required: true, index: true },
   senderName: { type: String, required: true },
-  ciphertext: { type: String, required: true },
-  iv: { type: String, required: true },
-  keyAlgorithm: { type: String, default: 'AES-GCM-256' },
+  text: { type: String },
+  ciphertext: { type: String },
+  iv: { type: String },
+  keyAlgorithm: { type: String, default: 'PLAIN' },
   timestamp: { type: String, default: () => new Date().toISOString() },
 });
 
