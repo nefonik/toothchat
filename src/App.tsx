@@ -1,81 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { 
-  UserProfile, ServerGroup, Channel, FriendRelation, EncryptedMessage, VoiceParticipant 
+  UserProfile, ServerGroup, Channel, FriendRelation, EncryptedMessage 
 } from './types';
 import { 
   generateIdentityKeyPair, exportPublicKeyJwk, importPublicKeyJwk, exportPrivateKeyJwk, 
-  importPrivateKeyJwk, deriveSharedKey, generateGroupChannelKey, deriveChannelKey, encryptText, decryptText, hashToken 
+  importPrivateKeyJwk, deriveSharedKey, deriveChannelKey, encryptText, decryptText 
 } from './lib/crypto';
 import { AuthModal } from './components/AuthModal';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
-import { VoiceChannelArea } from './components/VoiceChannelArea';
-import { DirectCallOverlay } from './components/DirectCallOverlay';
 import { FriendsView } from './components/FriendsView';
 import { ServerCreateModal } from './components/ServerCreateModal';
 import { ChannelCreateModal } from './components/ChannelCreateModal';
 import { ProfileModal } from './components/ProfileModal';
 import { ArchitectureDocsModal } from './components/ArchitectureDocsModal';
-
-// Helper for synthetic media stream fallback in restricted iframe/browser environments
-async function getMediaStream(audio: boolean, video: boolean): Promise<MediaStream> {
-  try {
-    return await navigator.mediaDevices.getUserMedia({ audio, video });
-  } catch (err) {
-    console.warn('Using synthetic canvas stream fallback for WebRTC:', err);
-    const canvas = document.createElement('canvas');
-    canvas.width = 640;
-    canvas.height = 480;
-    const ctx = canvas.getContext('2d')!;
-
-    let angle = 0;
-    const draw = () => {
-      ctx.fillStyle = '#090d16';
-      ctx.fillRect(0, 0, 640, 480);
-
-      // Animated wave pattern
-      ctx.fillStyle = 'rgba(139, 92, 246, 0.15)';
-      ctx.beginPath();
-      ctx.arc(320 + Math.cos(angle) * 30, 240 + Math.sin(angle) * 20, 120, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = '#a78bfa';
-      ctx.font = 'bold 24px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('🦷 Toothchat Stream', 320, 230);
-
-      ctx.fillStyle = '#34d399';
-      ctx.font = '14px monospace';
-      ctx.fillText('Połączenie Wideo Aktywne', 320, 270);
-
-      angle += 0.05;
-      requestAnimationFrame(draw);
-    };
-    draw();
-
-    const stream = canvas.captureStream(30);
-
-    try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      gain.gain.value = 0.001;
-      const dst = audioCtx.createMediaStreamDestination();
-      osc.connect(gain);
-      gain.connect(dst);
-      osc.start();
-      const audioTrack = dst.stream.getAudioTracks()[0];
-      if (audioTrack) {
-        stream.addTrack(audioTrack);
-      }
-    } catch (e) {
-      console.warn('Audio synth failed:', e);
-    }
-
-    return stream;
-  }
-}
 
 export default function App() {
   const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem('toothchat_token') || localStorage.getItem('aether_token'));
@@ -108,24 +47,6 @@ export default function App() {
 
   const socketRef = useRef<Socket | null>(null);
 
-  const [incomingCall, setIncomingCall] = useState<{ callerId: string; callerName: string; callerTag: string; callType: 'audio' | 'video' } | null>(null);
-  const [activeCallPeerName, setActiveCallPeerName] = useState<string | null>(null);
-  const [callPeerId, setCallPeerId] = useState<string | null>(null);
-  const [callLocalStream, setCallLocalStream] = useState<MediaStream | null>(null);
-  const [callRemoteStream, setCallRemoteStream] = useState<MediaStream | null>(null);
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-
-  const [activeVoiceChannelId, setActiveVoiceChannelId] = useState<string | null>(null);
-  const [voiceParticipants, setVoiceParticipants] = useState<VoiceParticipant[]>([]);
-  const [voiceLocalStream, setVoiceLocalStream] = useState<MediaStream | null>(null);
-  const voiceRemoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
-  const voicePeerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const [voiceStreamUpdateTrigger, setVoiceStreamUpdateTrigger] = useState(0);
-
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOn, setIsVideoOn] = useState(false);
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
-
   // Auto fetch user profile if authToken is present but currentUser is null
   useEffect(() => {
     if (authToken && !currentUser) {
@@ -154,12 +75,11 @@ export default function App() {
     if (currentUser && servers.length === 0) {
       const defaultChannels: Channel[] = [
         { id: 'chn_general_text', serverId: 'srv_general_01', name: 'ogólny-czat', type: 'text', topic: 'Główny kanał rozmów', createdBy: 'sys_admin', createdAt: new Date().toISOString() },
-        { id: 'chn_general_voice', serverId: 'srv_general_01', name: 'Pokój Główny (Głos/Wideo)', type: 'voice', createdBy: 'sys_admin', createdAt: new Date().toISOString() },
       ];
       setServers([{
         id: 'srv_general_01',
         name: 'Toothchat Community',
-        icon: '🦷',
+        icon: '🛡️',
         ownerId: 'sys_admin',
         members: [{ userId: currentUser.id, role: 'member', joinedAt: new Date().toISOString() }],
         channels: defaultChannels,
@@ -170,6 +90,7 @@ export default function App() {
       }
     }
   }, [currentUser, servers.length]);
+
   useEffect(() => {
     async function initKeys() {
       if (!identityKeyPair) {
@@ -209,18 +130,21 @@ export default function App() {
     socketRef.current = socket;
 
     socket.on('auth:state', async (data: { user: UserProfile; friends: FriendRelation[]; servers: ServerGroup[] }) => {
-      setCurrentUser(data.user);
-      setFriends(data.friends);
-      setServers(data.servers);
+      if (data.user) setCurrentUser(data.user);
+      if (data.friends) setFriends(data.friends);
+      if (data.servers) setServers(data.servers);
 
-      // Set default initial channel and server if needed
       if (data.servers && data.servers.length > 0) {
-        const genServer = data.servers.find(s => s.id === 'srv_general_01') || data.servers[0];
-        setActiveServerId(genServer.id);
-        if (genServer.channels && genServer.channels.length > 0) {
+        setActiveServerId(prev => {
+          const exists = data.servers.some(s => s.id === prev);
+          return exists ? prev : data.servers[0].id;
+        });
+
+        const activeSrv = data.servers.find(s => s.id === activeServerId) || data.servers[0];
+        if (activeSrv && activeSrv.channels && activeSrv.channels.length > 0) {
           setActiveChannel(prev => {
-            if (!prev || !genServer.channels.some(c => c.id === prev.id)) {
-              return genServer.channels[0];
+            if (!prev || !activeSrv.channels.some(c => c.id === prev.id)) {
+              return activeSrv.channels[0];
             }
             return prev;
           });
@@ -237,99 +161,19 @@ export default function App() {
       }));
     });
 
-    // Handle Incoming Direct Message (E2EE)
-    const handleIncomingMessage = async (msg: EncryptedMessage) => {
-      // Decrypt message using stored/derived key
+    socket.on('messages:history', async (data: { channelId: string; messages: EncryptedMessage[] }) => {
+      if (data?.messages) {
+        const decryptedList = await Promise.all(data.messages.map((m: EncryptedMessage) => processDecryption(m)));
+        setMessages(decryptedList);
+      }
+    });
+
+    socket.on('message:received', async (msg: EncryptedMessage) => {
       const decryptedMsg = await processDecryption(msg);
-      setMessages(prev => [...prev, decryptedMsg]);
-    };
-
-    // 1-on-1 Call Signaling Events
-    socket.on('call:incoming', (data: { callerId: string; callerName: string; callerTag: string; callType: 'audio' | 'video' }) => {
-      setIncomingCall(data);
-    });
-
-    socket.on('call:answered', async (data: { responderId: string; accepted: boolean }) => {
-      if (!data.accepted) {
-        alert('Połączenie zostało odrzucone przez rozmówcę.');
-        cleanupDirectCall();
-        return;
-      }
-      // Peer accepted call! Send WebRTC Offer
-      await createDirectCallOffer(data.responderId);
-    });
-
-    socket.on('call:signal', async (data: { senderId: string; sdp?: any; candidate?: any; type: string }) => {
-      if (data.sdp && peerConnectionRef.current) {
-        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        if (data.sdp.type === 'offer') {
-          const answer = await peerConnectionRef.current.createAnswer();
-          await peerConnectionRef.current.setLocalDescription(answer);
-          socket.emit('call:signal', { targetUserId: data.senderId, sdp: answer, type: 'answer' });
-        }
-      } else if (data.candidate && peerConnectionRef.current) {
-        await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
-      }
-    });
-
-    socket.on('call:hangup', () => {
-      cleanupDirectCall();
-    });
-
-    // Voice Channel Signaling Events
-    socket.on('voice:user_joined', async (data: { userId: string; displayName: string; isMuted: boolean; isVideoOn: boolean }) => {
-      setVoiceParticipants(prev => [...prev.filter(p => p.userId !== data.userId), {
-        userId: data.userId,
-        displayName: data.displayName,
-        isMuted: data.isMuted,
-        isDeafened: false,
-        isVideoOn: data.isVideoOn,
-        isScreenSharing: false,
-        joinedAt: new Date().toISOString(),
-      }]);
-
-      // Create peer connection to new participant
-      if (activeVoiceChannelId) {
-        await initiateVoicePeerConnection(data.userId, activeVoiceChannelId, true);
-      }
-    });
-
-    socket.on('voice:signal', async (data: { senderId: string; channelId: string; sdp?: any; candidate?: any }) => {
-      let pc = voicePeerConnectionsRef.current.get(data.senderId);
-      if (!pc && activeVoiceChannelId) {
-        pc = await initiateVoicePeerConnection(data.senderId, activeVoiceChannelId, false);
-      }
-
-      if (data.sdp && pc) {
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        if (data.sdp.type === 'offer') {
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          socket.emit('voice:signal', { targetUserId: data.senderId, channelId: data.channelId, sdp: answer });
-        }
-      } else if (data.candidate && pc) {
-        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-      }
-    });
-
-    socket.on('voice:peer_state_changed', (data: { userId: string; isMuted: boolean; isVideoOn: boolean }) => {
-      setVoiceParticipants(prev => prev.map(p => {
-        if (p.userId === data.userId) {
-          return { ...p, isMuted: data.isMuted, isVideoOn: data.isVideoOn };
-        }
-        return p;
-      }));
-    });
-
-    socket.on('voice:user_left', (data: { userId: string }) => {
-      setVoiceParticipants(prev => prev.filter(p => p.userId !== data.userId));
-      const pc = voicePeerConnectionsRef.current.get(data.userId);
-      if (pc) {
-        pc.close();
-        voicePeerConnectionsRef.current.delete(data.userId);
-      }
-      voiceRemoteStreamsRef.current.delete(data.userId);
-      setVoiceStreamUpdateTrigger(n => n + 1);
+      setMessages(prev => {
+        if (prev.some(m => m.id === msg.id)) return prev;
+        return [...prev, decryptedMsg];
+      });
     });
 
     return () => {
@@ -345,6 +189,7 @@ export default function App() {
     const setupChatListenerAndHistory = async () => {
       setMessages([]);
       if (activeChannel) {
+        socket.emit('channel:join', { channelId: activeChannel.id });
         socket.emit('chat:get_history', { channelId: activeChannel.id }, async (res: any) => {
           if (res?.success && res.history) {
             const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
@@ -361,6 +206,7 @@ export default function App() {
           });
         });
       } else if (activeDmUser) {
+        socket.emit('channel:join', { channelId: `dm_${activeDmUser.id}` });
         socket.emit('chat:get_history', { recipientId: activeDmUser.id }, async (res: any) => {
           if (res?.success && res.history) {
             const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
@@ -683,240 +529,25 @@ export default function App() {
     // Encrypt payload Zero-Knowledge
     const { ciphertext, iv } = await encryptText(text, aesKey);
 
-    socketRef.current.emit('chat:send_message', {
+    const payload = {
       serverId: activeServerId || undefined,
-      channelId: activeChannel?.id,
+      channelId: activeChannel ? activeChannel.id : `dm_${activeDmUser?.id}`,
       recipientId: activeDmUser?.id,
       ciphertext,
       iv,
       keyAlgorithm: 'AES-GCM-256',
-    }, async (res: any) => {
+    };
+
+    socketRef.current.emit('message:send', payload, async (res: any) => {
       if (!res?.success) {
-        alert(`Błąd wysyłania: ${res?.error || 'Nieznany błąd'}`);
-      } else if (res.message) {
-        const decryptedMsg = await processDecryption(res.message);
-        setMessages(prev => {
-          if (prev.some(m => m.id === res.message.id)) return prev;
-          return [...prev, decryptedMsg];
+        // Fallback
+        socketRef.current?.emit('chat:send_message', payload, async (r: any) => {
+          if (!r?.success) {
+            alert(`Błąd wysyłania: ${r?.error || 'Nieznany błąd'}`);
+          }
         });
       }
     });
-  };
-
-  // WEBRTC 1-ON-1 DIRECT CALL LOGIC
-  const createDirectCallOffer = async (peerId: string) => {
-    const stream = await getMediaStream(true, true);
-    setCallLocalStream(stream);
-
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-      ],
-    });
-    peerConnectionRef.current = pc;
-
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
-
-    pc.ontrack = (event) => {
-      setCallRemoteStream(event.streams[0]);
-    };
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socketRef.current?.emit('call:signal', {
-          targetUserId: peerId,
-          candidate: event.candidate,
-          type: 'candidate',
-        });
-      }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    socketRef.current?.emit('call:signal', {
-      targetUserId: peerId,
-      sdp: offer,
-      type: 'offer',
-    });
-  };
-
-  const handleInitiateCall = (targetUserId: string, callType: 'audio' | 'video') => {
-    const peer = friends.find(f => f.userId === targetUserId)?.user;
-    if (!peer) return;
-
-    setCallPeerId(targetUserId);
-    setActiveCallPeerName(peer.displayName);
-
-    socketRef.current?.emit('call:initiate', { targetUserId, callType }, (res: any) => {
-      if (!res.success) {
-        alert(res.error || 'Nie można nawiązać połączenia');
-        cleanupDirectCall();
-      }
-    });
-  };
-
-  const handleAcceptCall = async () => {
-    if (!incomingCall) return;
-
-    setCallPeerId(incomingCall.callerId);
-    setActiveCallPeerName(incomingCall.callerName);
-
-    const stream = await getMediaStream(true, incomingCall.callType === 'video');
-    setCallLocalStream(stream);
-
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-    });
-    peerConnectionRef.current = pc;
-
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
-
-    pc.ontrack = (event) => {
-      setCallRemoteStream(event.streams[0]);
-    };
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socketRef.current?.emit('call:signal', {
-          targetUserId: incomingCall.callerId,
-          candidate: event.candidate,
-          type: 'candidate',
-        });
-      }
-    };
-
-    socketRef.current?.emit('call:response', {
-      callerId: incomingCall.callerId,
-      accepted: true,
-    });
-
-    setIncomingCall(null);
-  };
-
-  const handleDeclineCall = () => {
-    if (incomingCall) {
-      socketRef.current?.emit('call:response', {
-        callerId: incomingCall.callerId,
-        accepted: false,
-      });
-      setIncomingCall(null);
-    }
-  };
-
-  const cleanupDirectCall = () => {
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-    if (callLocalStream) {
-      callLocalStream.getTracks().forEach(t => t.stop());
-      setCallLocalStream(null);
-    }
-    setCallRemoteStream(null);
-    setActiveCallPeerName(null);
-    setCallPeerId(null);
-  };
-
-  const handleHangupCall = () => {
-    if (callPeerId) {
-      socketRef.current?.emit('call:hangup', { targetUserId: callPeerId });
-    }
-    cleanupDirectCall();
-  };
-
-  // WEBRTC MESH VOICE CHANNEL LOGIC
-  const initiateVoicePeerConnection = async (peerUserId: string, channelId: string, isInitiator: boolean, streamOverride?: MediaStream | null) => {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-    });
-
-    voicePeerConnectionsRef.current.set(peerUserId, pc);
-
-    const activeStream = streamOverride || voiceLocalStream;
-    if (activeStream) {
-      activeStream.getTracks().forEach(track => pc.addTrack(track, activeStream));
-    }
-
-    pc.ontrack = (event) => {
-      voiceRemoteStreamsRef.current.set(peerUserId, event.streams[0]);
-      setVoiceStreamUpdateTrigger(n => n + 1);
-    };
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socketRef.current?.emit('voice:signal', {
-          targetUserId: peerUserId,
-          channelId,
-          candidate: event.candidate,
-        });
-      }
-    };
-
-    if (isInitiator) {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socketRef.current?.emit('voice:signal', {
-        targetUserId: peerUserId,
-        channelId,
-        sdp: offer,
-      });
-    }
-
-    return pc;
-  };
-
-  const handleJoinVoiceChannel = async (channel: Channel) => {
-    setActiveVoiceChannelId(channel.id);
-    setActiveChannel(channel);
-
-    const stream = await getMediaStream(true, isVideoOn);
-    setVoiceLocalStream(stream);
-
-    setVoiceParticipants([{
-      userId: 'self',
-      displayName: currentUser?.displayName || 'Ja',
-      isMuted: false,
-      isDeafened: false,
-      isVideoOn,
-      isScreenSharing: false,
-      joinedAt: new Date().toISOString(),
-    }]);
-
-    socketRef.current?.emit('voice:join', { channelId: channel.id, isMuted, isVideoOn }, async (res: any) => {
-      if (res.success && res.existingPeers) {
-        for (const peer of res.existingPeers) {
-          setVoiceParticipants(prev => [...prev, {
-            userId: peer.userId,
-            displayName: peer.displayName,
-            isMuted: peer.isMuted,
-            isDeafened: peer.isDeafened,
-            isVideoOn: peer.isVideoOn,
-            isScreenSharing: false,
-            joinedAt: new Date().toISOString(),
-          }]);
-          await initiateVoicePeerConnection(peer.userId, channel.id, true, stream);
-        }
-      }
-    });
-  };
-
-  const handleLeaveVoiceChannel = () => {
-    if (activeVoiceChannelId) {
-      socketRef.current?.emit('voice:leave', { channelId: activeVoiceChannelId });
-    }
-    voicePeerConnectionsRef.current.forEach(pc => pc.close());
-    voicePeerConnectionsRef.current.clear();
-    voiceRemoteStreamsRef.current.clear();
-
-    if (voiceLocalStream) {
-      voiceLocalStream.getTracks().forEach(t => t.stop());
-      setVoiceLocalStream(null);
-    }
-
-    setActiveVoiceChannelId(null);
-    setVoiceParticipants([]);
   };
 
   // IF NOT LOGGED IN: SHOW AUTH MODAL
@@ -941,22 +572,22 @@ export default function App() {
           activeChannelId={activeChannel?.id || null}
           activeDmUserId={activeDmUser?.id || null}
           friendsCount={friends.filter(f => f.status === 'accepted').length}
-          activeVoiceChannelId={activeVoiceChannelId}
+          activeVoiceChannelId={null}
           onSelectServer={(serverId) => {
             setActiveServerId(serverId);
             setActiveDmUser(null);
             setIsFriendsTabOpen(false);
             setIsMobileSidebarOpen(false);
+            const targetSrv = servers.find(s => s.id === serverId);
+            if (targetSrv && targetSrv.channels && targetSrv.channels.length > 0) {
+              setActiveChannel(targetSrv.channels[0]);
+            }
           }}
           onSelectChannel={(channel) => {
             setIsFriendsTabOpen(false);
             setActiveDmUser(null);
             setIsMobileSidebarOpen(false);
-            if (channel.type === 'voice') {
-              handleJoinVoiceChannel(channel);
-            } else {
-              setActiveChannel(channel);
-            }
+            setActiveChannel(channel);
           }}
           onSelectDmUser={(userId) => {
             const friendObj = friends.find(f => f.userId === userId)?.user;
@@ -1012,22 +643,22 @@ export default function App() {
               activeChannelId={activeChannel?.id || null}
               activeDmUserId={activeDmUser?.id || null}
               friendsCount={friends.filter(f => f.status === 'accepted').length}
-              activeVoiceChannelId={activeVoiceChannelId}
+              activeVoiceChannelId={null}
               onSelectServer={(serverId) => {
                 setActiveServerId(serverId);
                 setActiveDmUser(null);
                 setIsFriendsTabOpen(false);
                 setIsMobileSidebarOpen(false);
+                const targetSrv = servers.find(s => s.id === serverId);
+                if (targetSrv && targetSrv.channels && targetSrv.channels.length > 0) {
+                  setActiveChannel(targetSrv.channels[0]);
+                }
               }}
               onSelectChannel={(channel) => {
                 setIsFriendsTabOpen(false);
                 setActiveDmUser(null);
                 setIsMobileSidebarOpen(false);
-                if (channel.type === 'voice') {
-                  handleJoinVoiceChannel(channel);
-                } else {
-                  setActiveChannel(channel);
-                }
+                setActiveChannel(channel);
               }}
               onSelectDmUser={(userId) => {
                 const friendObj = friends.find(f => f.userId === userId)?.user;
@@ -1074,9 +705,11 @@ export default function App() {
         {isFriendsTabOpen ? (
           <FriendsView
             friends={friends}
-            onSendFriendRequest={async (tag) => {
+            onSendFriendRequest={async (userTag) => {
               return new Promise((res) => {
-                socketRef.current?.emit('friend:request', { targetUserTag: tag }, (r: any) => res(r));
+                socketRef.current?.emit('friend:request', { userTag }, (r: any) => {
+                  res(r || { success: true });
+                });
               });
             }}
             onAcceptFriendRequest={async (userId) => {
@@ -1089,36 +722,6 @@ export default function App() {
               setActiveDmUser(user);
               setIsFriendsTabOpen(false);
             }}
-            onInitiateCall={handleInitiateCall}
-            onToggleMobileSidebar={() => setIsMobileSidebarOpen(prev => !prev)}
-          />
-        ) : activeVoiceChannelId && activeChannel?.type === 'voice' ? (
-          <VoiceChannelArea
-            channelName={activeChannel.name}
-            participants={voiceParticipants}
-            localStream={voiceLocalStream}
-            remoteStreams={voiceRemoteStreamsRef.current}
-            isMuted={isMuted}
-            isVideoOn={isVideoOn}
-            isScreenSharing={isScreenSharing}
-            onToggleMute={() => {
-              setIsMuted(!isMuted);
-              socketRef.current?.emit('voice:toggle_state', {
-                channelId: activeVoiceChannelId,
-                isMuted: !isMuted,
-                isVideoOn,
-              });
-            }}
-            onToggleVideo={() => {
-              setIsVideoOn(!isVideoOn);
-              socketRef.current?.emit('voice:toggle_state', {
-                channelId: activeVoiceChannelId,
-                isMuted,
-                isVideoOn: !isVideoOn,
-              });
-            }}
-            onToggleScreenShare={() => setIsScreenSharing(!isScreenSharing)}
-            onLeaveVoiceChannel={handleLeaveVoiceChannel}
             onToggleMobileSidebar={() => setIsMobileSidebarOpen(prev => !prev)}
           />
         ) : (
@@ -1133,30 +736,21 @@ export default function App() {
         )}
       </div>
 
-      {/* 1-ON-1 DIRECT CALL OVERLAY */}
-      <DirectCallOverlay
-        incomingCall={incomingCall}
-        activeCallPeerName={activeCallPeerName}
-        localStream={callLocalStream}
-        remoteStream={callRemoteStream}
-        isMuted={isMuted}
-        isVideoOn={isVideoOn}
-        isScreenSharing={isScreenSharing}
-        onAcceptCall={handleAcceptCall}
-        onDeclineCall={handleDeclineCall}
-        onHangupCall={handleHangupCall}
-        onToggleMute={() => setIsMuted(!isMuted)}
-        onToggleVideo={() => setIsVideoOn(!isVideoOn)}
-        onToggleScreenShare={() => setIsScreenSharing(!isScreenSharing)}
-      />
-
       {/* MODALS */}
       <ServerCreateModal
         isOpen={isCreateServerModalOpen}
         onClose={() => setIsCreateServerModalOpen(false)}
         onCreateServer={async (name, icon) => {
           return new Promise((res) => {
-            socketRef.current?.emit('server:create', { name, icon }, (r: any) => res(r));
+            socketRef.current?.emit('server:create', { name, icon }, (r: any) => {
+              if (r?.success && r?.server) {
+                setActiveServerId(r.server.id);
+                if (r.server.channels && r.server.channels.length > 0) {
+                  setActiveChannel(r.server.channels[0]);
+                }
+              }
+              res(r || { success: false, error: 'Brak połączenia z serwerem' });
+            });
           });
         }}
       />
@@ -1166,9 +760,14 @@ export default function App() {
         serverId={createChannelServerId}
         initialType={createChannelInitialType}
         onClose={() => setIsCreateChannelModalOpen(false)}
-        onCreateChannel={async (sId, name, type) => {
+        onCreateChannel={async (sId, name) => {
           return new Promise((res) => {
-            socketRef.current?.emit('channel:create', { serverId: sId, name, type }, (r: any) => res(r));
+            socketRef.current?.emit('channel:create', { serverId: sId, name, type: 'text' }, (r: any) => {
+              if (r?.success && r?.channel) {
+                setActiveChannel(r.channel);
+              }
+              res(r || { success: false, error: 'Brak połączenia z serwerem' });
+            });
           });
         }}
       />
@@ -1181,8 +780,8 @@ export default function App() {
           onUpdateProfile={async (displayName) => {
             return new Promise((res) => {
               socketRef.current?.emit('user:update_profile', { displayName }, (r: any) => {
-                if (r.success) setCurrentUser(r.user);
-                res(r);
+                if (r?.success && r?.user) setCurrentUser(r.user);
+                res(r || { success: true });
               });
             });
           }}

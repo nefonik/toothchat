@@ -13,7 +13,6 @@ interface SidebarProps {
   activeChannelId: string | null;
   activeDmUserId: string | null;
   friendsCount: number;
-  activeVoiceChannelId: string | null;
   onSelectServer: (serverId: string | null) => void;
   onSelectChannel: (channel: Channel) => void;
   onSelectDmUser: (userId: string) => void;
@@ -23,7 +22,7 @@ interface SidebarProps {
   onOpenProfileModal: () => void;
   onLogout: () => void;
   onCloseMobileSidebar?: () => void;
-  onOpenCreateChannelModal?: (serverId: string, type: 'text' | 'voice') => void;
+  onOpenCreateChannelModal?: (serverId: string, type: 'text') => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -33,7 +32,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeChannelId,
   activeDmUserId,
   friendsCount,
-  activeVoiceChannelId,
   onSelectServer,
   onSelectChannel,
   onSelectDmUser,
@@ -45,9 +43,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCloseMobileSidebar,
   onOpenCreateChannelModal,
 }) => {
-  const [isMuted, setIsMuted] = useState(false);
-  const [isDeafened, setIsDeafened] = useState(false);
-
   const activeServer = servers.find(s => s.id === activeServerId);
 
   return (
@@ -169,125 +164,65 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           )}
 
-          {/* SERVER MODE (TEXT & VOICE CHANNELS) */}
+          {/* SERVER MODE (TEXT CHANNELS) */}
           {activeServer && (
-            <>
-              {/* Text Channels */}
-              <div>
-                <div className="px-2 mb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                  <span>Kanały Tekstowe</span>
-                  {onOpenCreateChannelModal && (
-                    <button
-                      onClick={() => onOpenCreateChannelModal(activeServer.id, 'text')}
-                      className="p-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-                      title="Dodaj kanał tekstowy"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-                <div className="space-y-0.5">
-                  {activeServer.channels
-                    .filter(c => c.type === 'text')
-                    .map(channel => {
-                      const isActive = activeChannelId === channel.id;
-                      return (
-                        <button
-                          key={channel.id}
-                          onClick={() => onSelectChannel(channel)}
-                          className={`w-full px-2.5 py-1.5 rounded-lg flex items-center space-x-2 text-xs transition-all ${
-                            isActive
-                              ? 'bg-slate-800 text-white font-medium shadow-sm'
-                              : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200'
-                          }`}
-                        >
-                          <Hash className="w-4 h-4 text-slate-500" />
-                          <span className="truncate">{channel.name}</span>
-                        </button>
-                      );
-                    })}
-                </div>
+            <div>
+              <div className="px-2 mb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                <span>Kanały Tekstowe</span>
+                {onOpenCreateChannelModal && (
+                  <button
+                    onClick={() => onOpenCreateChannelModal(activeServer.id, 'text')}
+                    className="p-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+                    title="Dodaj kanał tekstowy"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
-
-              {/* Voice Channels */}
-              <div>
-                <div className="px-2 mb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                  <span>Kanały Głosowe</span>
-                  {onOpenCreateChannelModal && (
-                    <button
-                      onClick={() => onOpenCreateChannelModal(activeServer.id, 'voice')}
-                      className="p-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-                      title="Dodaj kanał głosowy"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-                <div className="space-y-0.5">
-                  {activeServer.channels
-                    .filter(c => c.type === 'voice')
-                    .map(channel => {
-                      const isActive = activeVoiceChannelId === channel.id;
-                      return (
-                        <button
-                          key={channel.id}
-                          onClick={() => onSelectChannel(channel)}
-                          className={`w-full px-2.5 py-1.5 rounded-lg flex items-center justify-between text-xs transition-all ${
-                            isActive
-                              ? 'bg-emerald-600/20 text-emerald-300 font-medium border border-emerald-500/30'
-                              : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200'
-                          }`}
-                        >
-                          <div className="flex items-center space-x-2 truncate">
-                            <Volume2 className={`w-4 h-4 ${isActive ? 'text-emerald-400 animate-pulse' : 'text-slate-500'}`} />
-                            <span className="truncate">{channel.name}</span>
-                          </div>
-                          {isActive && (
-                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                          )}
-                        </button>
-                      );
-                    })}
-                </div>
+              <div className="space-y-0.5">
+                {activeServer.channels
+                  .filter(c => c.type === 'text' || !c.type)
+                  .map(channel => {
+                    const isActive = activeChannelId === channel.id;
+                    return (
+                      <button
+                        key={channel.id}
+                        onClick={() => onSelectChannel(channel)}
+                        className={`w-full px-2.5 py-1.5 rounded-lg flex items-center space-x-2 text-xs transition-all ${
+                          isActive
+                            ? 'bg-slate-800 text-white font-medium shadow-sm'
+                            : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200'
+                        }`}
+                      >
+                        <Hash className="w-4 h-4 text-slate-500" />
+                        <span className="truncate">{channel.name}</span>
+                      </button>
+                    );
+                  })}
               </div>
-            </>
+            </div>
           )}
 
         </div>
 
-        {/* 3. FOOTER USER PROFILE BAR */}
+        {/* FOOTER USER PROFILE BAR */}
         <div className="p-2.5 bg-slate-950/80 border-t border-slate-800/80 flex items-center justify-between">
           <div 
             onClick={onOpenProfileModal}
-            className="flex items-center space-x-2 cursor-pointer p-1 rounded-lg hover:bg-slate-800/60 transition-all max-w-[120px]"
+            className="flex items-center space-x-2 cursor-pointer p-1 rounded-lg hover:bg-slate-800/60 transition-all flex-1 min-w-0 mr-2"
             title="Kliknij, aby edytować profil"
           >
-            <div className="relative w-8 h-8 rounded-full bg-violet-600/30 border border-violet-500/40 flex items-center justify-center font-bold text-violet-300 text-xs">
+            <div className="relative w-8 h-8 rounded-full bg-violet-600/30 border border-violet-500/40 flex items-center justify-center font-bold text-violet-300 text-xs shrink-0">
               {currentUser.displayName.charAt(0).toUpperCase()}
               <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-slate-950" />
             </div>
-            <div className="truncate">
+            <div className="truncate min-w-0">
               <div className="text-xs font-semibold text-white truncate">{currentUser.displayName}</div>
               <div className="text-[10px] text-slate-500 font-mono truncate">{currentUser.userTag}</div>
             </div>
           </div>
 
-          {/* Quick Audio & Logout Controls */}
-          <div className="flex items-center space-x-0.5 text-slate-400">
-            <button
-              onClick={() => setIsMuted(!isMuted)}
-              className={`p-1.5 rounded-lg hover:bg-slate-800 transition-colors ${isMuted ? 'text-red-400' : ''}`}
-              title={isMuted ? 'Włącz Mikrofon' : 'Wycisz Mikrofon'}
-            >
-              {isMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-            </button>
-            <button
-              onClick={() => setIsDeafened(!isDeafened)}
-              className={`p-1.5 rounded-lg hover:bg-slate-800 transition-colors ${isDeafened ? 'text-red-400' : ''}`}
-              title={isDeafened ? 'Odłącz Dźwięk' : 'Wycisz Słuchawki'}
-            >
-              <Headphones className="w-4 h-4" />
-            </button>
+          <div className="flex items-center space-x-1 text-slate-400">
             <button
               onClick={onLogout}
               className="p-1.5 rounded-lg hover:bg-red-500/20 hover:text-red-400 transition-colors"

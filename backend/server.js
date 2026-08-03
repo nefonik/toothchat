@@ -413,180 +413,114 @@ io.on('connection', async (socket) => {
   });
 
   // ---------------------------------------------------------------------------
-  // SYGNALIZACJA WEBRTC DLA KANAŁÓW GŁOSOWYCH & PRYWATNYCH
+  // OBSŁUGA ZNAJOMYCH I RELACJI W MONGODB
   // ---------------------------------------------------------------------------
-
-  // Użytkownik dołącza do kanału głosowego
-  socket.on('voice:join', async (data, callback) => {
-    const { channelId } = data;
-    if (!channelId) return callback?.({ success: false, error: 'Brak channelId' });
-
-    socket.join(`voice:${channelId}`);
-
-    if (!voiceChannels.has(channelId)) {
-      voiceChannels.set(channelId, new Map());
-    }
-
-    const participants = voiceChannels.get(channelId);
-    const participantInfo = {
-      userId,
-      isMuted: false,
-      isVideoOn: false,
-      isScreenSharing: false,
-      user: {
-        id: socket.user.id,
-        userTag: socket.user.userTag,
-        displayName: socket.user.displayName,
-        publicKeyJwk: socket.user.publicKeyJwk
+  socket.on('friend:request', async (data, callback) => {
+    try {
+      const userTag = typeof data === 'string' ? data : data?.userTag;
+      if (!userTag || !userTag.includes('#')) {
+        return callback?.({ success: false, error: 'Wprowadź poprawny tag (np. Szyfrant#1337)' });
       }
-    };
 
-    participants.set(userId, participantInfo);
-
-    // Wyślij nowemu użytkownikowi obecnych uczestników
-    const currentParticipants = Array.from(participants.values());
-    socket.emit('voice:participants', { channelId, participants: currentParticipants });
-
-    // Poinformuj innych użytkowników w pokoju głosowym
-    socket.to(`voice:${channelId}`).emit('voice:user_joined', {
-      channelId,
-      participant: participantInfo
-    });
-
-    console.log(`🎙️ User ${userId} joined voice channel ${channelId}`);
-    callback?.({ success: true, participants: currentParticipants });
-  });
-
-  // Użytkownik opuszcza kanał głosowy
-  socket.on('voice:leave', (data) => {
-    const { channelId } = data;
-    if (!channelId) return;
-
-    socket.leave(`voice:${channelId}`);
-
-    if (voiceChannels.has(channelId)) {
-      const participants = voiceChannels.get(channelId);
-      participants.delete(userId);
-      if (participants.size === 0) {
-        voiceChannels.delete(channelId);
+      const cleanTag = userTag.trim();
+      if (cleanTag.toLowerCase() === socket.user.userTag.toLowerCase()) {
+        return callback?.({ success: false, error: 'Nie możesz wysłać zaproszenia do siebie' });
       }
-    }
 
-    io.to(`voice:${channelId}`).emit('voice:user_left', { channelId, userId });
-    console.log(`🎙️ User ${userId} left voice channel ${channelId}`);
-  });
-
-  // WebRTC Signaling Relay (Offer)
-  socket.on('voice:offer', (data) => {
-    const { targetUserId, offer, channelId } = data;
-    const targetSocketId = userSocketMap.get(targetUserId);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('voice:offer', {
-        senderUserId: userId,
-        offer,
-        channelId
+      const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const targetUser = await UserModel.findOne({
+        userTag: { $regex: new RegExp(`^${escapeRegExp(cleanTag)}$`, 'i') }
       });
-    }
-  });
 
-  // WebRTC Signaling Relay (Answer)
-  socket.on('voice:answer', (data) => {
-    const { targetUserId, answer, channelId } = data;
-    const targetSocketId = userSocketMap.get(targetUserId);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('voice:answer', {
-        senderUserId: userId,
-        answer,
-        channelId
-      });
-    }
-  });
-
-  // WebRTC Signaling Relay (ICE Candidates)
-  socket.on('voice:candidate', (data) => {
-    const { targetUserId, candidate, channelId } = data;
-    const targetSocketId = userSocketMap.get(targetUserId);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('voice:candidate', {
-        senderUserId: userId,
-        candidate,
-        channelId
-      });
-    }
-  });
-
-  // Status mikrofonu/wideo na kanale głosowym
-  socket.on('voice:state_change', (data) => {
-    const { channelId, isMuted, isVideoOn, isScreenSharing } = data;
-    if (voiceChannels.has(channelId)) {
-      const p = voiceChannels.get(channelId).get(userId);
-      if (p) {
-        p.isMuted = !!isMuted;
-        p.isVideoOn = !!isVideoOn;
-        p.isScreenSharing = !!isScreenSharing;
-        io.to(`voice:${channelId}`).emit('voice:state_change', {
-          channelId,
-          userId,
-          isMuted: p.isMuted,
-          isVideoOn: p.isVideoOn,
-          isScreenSharing: p.isScreenSharing
-        });
+      if (!targetUser) {
+        return callback?.({ success: false, error: `Nie znaleziono użytkownika ${cleanTag}` });
       }
+
+      const senderDoc = await UserModel.findOne({ id: userId });
+      if (!senderDoc) return callback?.({ success: false, error: 'Błąd konta' });
+
+      // Check existing relation
+      const existingSenderRel = (senderDoc.friends || []).find(f => f.userId === targetUser.id);
+      if (existingSenderRel) {
+        if (existingSenderRel.status === 'accepted') {
+          return callback?.({ success: false, error: 'Jesteście już znajomymi' });
+        }
+        if (existingSenderRel.status === 'pending_sent') {
+          return callback?.({ success: false, error: 'Zaproszenie zostało już wysłane' });
+        }
+      }
+
+      senderDoc.friends = (senderDoc.friends || []).filter(f => f.userId !== targetUser.id);
+      senderDoc.friends.push({ userId: targetUser.id, status: 'pending_sent', updatedAt: new Date().toISOString() });
+      await senderDoc.save();
+
+      targetUser.friends = (targetUser.friends || []).filter(f => f.userId !== userId);
+      targetUser.friends.push({ userId: userId, status: 'pending_received', updatedAt: new Date().toISOString() });
+      await targetUser.save();
+
+      await sendUserState(userId);
+      await sendUserState(targetUser.id);
+
+      callback?.({ success: true });
+    } catch (err) {
+      console.error('Error in friend:request:', err);
+      callback?.({ success: false, error: 'Błąd wysyłania zaproszenia' });
     }
   });
 
-  // Sygnalizacja bezpośrednich połączeń 1-na-1 (Direct Calls)
-  socket.on('call:request', (data) => {
-    const { targetUserId, callType } = data;
-    const targetSocketId = userSocketMap.get(targetUserId);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('call:incoming', {
-        callerId: userId,
-        callerName: socket.user.displayName,
-        callerTag: socket.user.userTag,
-        callType: callType || 'audio'
-      });
+  socket.on('friend:accept', async (data, callback) => {
+    try {
+      const targetUserId = typeof data === 'string' ? data : data?.targetUserId;
+      if (!targetUserId) return callback?.({ success: false, error: 'Brak ID użytkownika' });
+
+      const senderDoc = await UserModel.findOne({ id: userId });
+      const targetUser = await UserModel.findOne({ id: targetUserId });
+
+      if (!senderDoc || !targetUser) return callback?.({ success: false, error: 'Użytkownik nie istnieje' });
+
+      senderDoc.friends = (senderDoc.friends || []).filter(f => f.userId !== targetUserId);
+      senderDoc.friends.push({ userId: targetUserId, status: 'accepted', updatedAt: new Date().toISOString() });
+      await senderDoc.save();
+
+      targetUser.friends = (targetUser.friends || []).filter(f => f.userId !== userId);
+      targetUser.friends.push({ userId: userId, status: 'accepted', updatedAt: new Date().toISOString() });
+      await targetUser.save();
+
+      await sendUserState(userId);
+      await sendUserState(targetUserId);
+
+      callback?.({ success: true });
+    } catch (err) {
+      console.error('Error in friend:accept:', err);
+      callback?.({ success: false, error: 'Błąd akceptowania zaproszenia' });
     }
   });
 
-  socket.on('call:answer', (data) => {
-    const { callerId, accepted } = data;
-    const callerSocketId = userSocketMap.get(callerId);
-    if (callerSocketId) {
-      io.to(callerSocketId).emit('call:answered', {
-        responderId: userId,
-        accepted
-      });
-    }
-  });
+  socket.on('friend:decline', async (data, callback) => {
+    try {
+      const targetUserId = typeof data === 'string' ? data : data?.targetUserId;
+      if (!targetUserId) return callback?.({ success: false, error: 'Brak ID użytkownika' });
 
-  socket.on('call:signal', (data) => {
-    const { targetUserId, signal } = data;
-    const targetSocketId = userSocketMap.get(targetUserId);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('call:signal', {
-        senderId: userId,
-        signal
-      });
-    }
-  });
+      const senderDoc = await UserModel.findOne({ id: userId });
+      const targetUser = await UserModel.findOne({ id: targetUserId });
 
-  socket.on('call:ice_candidate', (data) => {
-    const { targetUserId, candidate } = data;
-    const targetSocketId = userSocketMap.get(targetUserId);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('call:ice_candidate', {
-        senderId: userId,
-        candidate
-      });
-    }
-  });
+      if (senderDoc) {
+        senderDoc.friends = (senderDoc.friends || []).filter(f => f.userId !== targetUserId);
+        await senderDoc.save();
+      }
 
-  socket.on('call:end', (data) => {
-    const { targetUserId } = data;
-    const targetSocketId = userSocketMap.get(targetUserId);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('call:ended', { senderId: userId });
+      if (targetUser) {
+        targetUser.friends = (targetUser.friends || []).filter(f => f.userId !== userId);
+        await targetUser.save();
+      }
+
+      await sendUserState(userId);
+      if (targetUser) await sendUserState(targetUserId);
+
+      callback?.({ success: true });
+    } catch (err) {
+      console.error('Error in friend:decline:', err);
+      callback?.({ success: false, error: 'Błąd odrzucania zaproszenia' });
     }
   });
 
@@ -601,7 +535,6 @@ io.on('connection', async (socket) => {
 
       const serverId = `srv_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
       const textChId = `chn_${Date.now()}_text`;
-      const voiceChId = `chn_${Date.now()}_voice`;
 
       const textChannel = {
         id: textChId,
@@ -613,29 +546,18 @@ io.on('connection', async (socket) => {
         createdAt: new Date().toISOString()
       };
 
-      const voiceChannel = {
-        id: voiceChId,
-        serverId,
-        name: 'Głosowy 1',
-        type: 'voice',
-        topic: 'Kanał głosowy WebRTC Mesh',
-        createdBy: userId,
-        createdAt: new Date().toISOString()
-      };
-
       const newServer = {
         id: serverId,
         name: data.name.trim(),
         icon: data.icon || '🛡️',
         ownerId: userId,
         members: [{ userId, role: 'owner', joinedAt: new Date().toISOString() }],
-        channels: [textChannel, voiceChannel],
+        channels: [textChannel],
         createdAt: new Date().toISOString()
       };
 
       await ServerModel.create(newServer);
       await ChannelModel.create(textChannel);
-      await ChannelModel.create(voiceChannel);
 
       await sendUserState(userId);
       callback?.({ success: true, server: newServer });
@@ -661,8 +583,8 @@ io.on('connection', async (socket) => {
         id: channelId,
         serverId: data.serverId,
         name: cleanName,
-        type: data.type === 'voice' ? 'voice' : 'text',
-        topic: data.topic || (data.type === 'voice' ? 'Kanał głosowy WebRTC' : 'Kanał tekstowy'),
+        type: 'text',
+        topic: data.topic || 'Kanał tekstowy',
         createdBy: userId,
         createdAt: new Date().toISOString()
       };

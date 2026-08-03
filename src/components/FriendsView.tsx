@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Users, UserPlus, Phone, Video, MessageSquare, Check, X, Shield, Key, Menu } from 'lucide-react';
+import { Users, UserPlus, MessageSquare, Check, X, Key, Menu } from 'lucide-react';
 import { FriendRelation, UserProfile } from '../types';
 
 interface FriendsViewProps {
@@ -8,7 +8,6 @@ interface FriendsViewProps {
   onAcceptFriendRequest: (userId: string) => Promise<void>;
   onDeclineFriendRequest: (userId: string) => Promise<void>;
   onSelectDmUser: (user: UserProfile) => void;
-  onInitiateCall: (targetUserId: string, callType: 'audio' | 'video') => void;
   onToggleMobileSidebar?: () => void;
 }
 
@@ -18,7 +17,6 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   onAcceptFriendRequest,
   onDeclineFriendRequest,
   onSelectDmUser,
-  onInitiateCall,
   onToggleMobileSidebar,
 }) => {
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'add'>('all');
@@ -252,24 +250,11 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                     <div className="flex items-center space-x-2">
                       <button
                         onClick={() => onSelectDmUser(friend)}
-                        className="p-2.5 rounded-xl bg-slate-800 hover:bg-violet-600 text-slate-300 hover:text-white transition-all"
+                        className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-violet-600 text-slate-300 hover:text-white transition-all text-xs font-semibold flex items-center space-x-1.5"
                         title="Otwórz Zaszyfrowany Czat DM"
                       >
                         <MessageSquare className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => onInitiateCall(friend.id, 'audio')}
-                        className="p-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-slate-300 hover:text-white transition-all"
-                        title="Zadzwoń Audio (P2P Call)"
-                      >
-                        <Phone className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => onInitiateCall(friend.id, 'video')}
-                        className="p-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-slate-300 hover:text-white transition-all"
-                        title="Zadzwoń Wideo (P2P Call)"
-                      >
-                        <Video className="w-4 h-4" />
+                        <span>Napisz wiadomość</span>
                       </button>
                     </div>
                   </div>
