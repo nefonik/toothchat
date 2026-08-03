@@ -46,6 +46,13 @@ export default function App() {
   const derivedKeysRef = useRef<Map<string, CryptoKey>>(new Map());
 
   const socketRef = useRef<Socket | null>(null);
+  const activeViewRef = useRef<{ channelId?: string; dmUserId?: string }>({});
+  useEffect(() => {
+    activeViewRef.current = {
+      channelId: activeChannel?.id,
+      dmUserId: activeDmUser?.id,
+    };
+  }, [activeChannel, activeDmUser]);
 
   // Auto fetch user profile if authToken is present but currentUser is null
   useEffect(() => {
@@ -169,11 +176,21 @@ export default function App() {
     });
 
     socket.on('message:received', async (msg: EncryptedMessage) => {
-      const decryptedMsg = await processDecryption(msg);
-      setMessages(prev => {
-        if (prev.some(m => m.id === msg.id)) return prev;
-        return [...prev, decryptedMsg];
-      });
+      const currentCh = activeViewRef.current.channelId;
+      const currentDm = activeViewRef.current.dmUserId;
+
+      const isForChannel = currentCh && (msg.channelId === currentCh || (!msg.channelId && currentCh === 'chn_general_text'));
+      const isForDm = currentDm && (
+        msg.recipientId === currentDm || msg.senderId === currentDm || msg.channelId === `dm_${currentDm}`
+      );
+
+      if (isForChannel || isForDm) {
+        const decryptedMsg = await processDecryption(msg);
+        setMessages(prev => {
+          if (prev.some(m => m.id === msg.id)) return prev;
+          return [...prev, decryptedMsg];
+        });
+      }
     });
 
     return () => {

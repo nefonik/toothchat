@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 
-// MongoDB Schemas
+// MongoDB Schemas with strict: false so all fields are stored
 const UserSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   tokenHash: { type: String, required: true, unique: true, index: true },
@@ -16,7 +16,7 @@ const UserSchema = new mongoose.Schema({
     },
   ],
   createdAt: { type: String, default: () => new Date().toISOString() },
-});
+}, { strict: false, timestamps: true });
 
 const ChannelSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
@@ -26,7 +26,7 @@ const ChannelSchema = new mongoose.Schema({
   topic: { type: String },
   createdBy: { type: String, required: true },
   createdAt: { type: String, default: () => new Date().toISOString() },
-});
+}, { strict: false });
 
 const ServerSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
@@ -43,7 +43,7 @@ const ServerSchema = new mongoose.Schema({
   ],
   channels: [ChannelSchema],
   createdAt: { type: String, default: () => new Date().toISOString() },
-});
+}, { strict: false });
 
 const MessageSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
@@ -57,7 +57,7 @@ const MessageSchema = new mongoose.Schema({
   iv: { type: String },
   keyAlgorithm: { type: String, default: 'PLAIN' },
   timestamp: { type: String, default: () => new Date().toISOString() },
-});
+}, { strict: false, timestamps: true });
 
 export const UserModel: any = mongoose.models.User || mongoose.model('User', UserSchema);
 export const ServerModel: any = mongoose.models.Server || mongoose.model('Server', ServerSchema);

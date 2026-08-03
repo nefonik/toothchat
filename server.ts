@@ -11,7 +11,7 @@ import {
   ServerModel,
   ChannelModel,
   MessageModel,
-} from './api/_db.js';
+} from './api/_db';
 
 let isMongoConnected = false;
 
@@ -254,9 +254,10 @@ async function startAppServer() {
             recipientId: m.recipientId,
             senderId: m.senderId,
             senderName: m.senderName,
-            ciphertext: m.ciphertext,
-            iv: m.iv,
-            keyAlgorithm: m.keyAlgorithm || 'AES-GCM-256',
+            text: m.text || m.ciphertext || '',
+            ciphertext: m.ciphertext || m.text || '',
+            iv: m.iv || '',
+            keyAlgorithm: m.keyAlgorithm || 'PLAIN',
             timestamp: m.timestamp || new Date().toISOString(),
           });
         }
@@ -1130,11 +1131,19 @@ async function startAppServer() {
         }
       }
 
+      // Auto-join sender to channel room if specified
+      if (channelId) {
+        socket.join(channelId);
+      }
+
       // Broadcast message to rooms & recipients
+      io.emit('message:received', newMsg);
+
       if (channelId) {
         io.to(channelId).emit('message:received', newMsg);
         io.emit(`chat:channel:${channelId}`, newMsg);
       }
+
       if (data.recipientId) {
         const targetSocketId = db.userSocketMap.get(data.recipientId);
         if (targetSocketId) {
@@ -1143,8 +1152,6 @@ async function startAppServer() {
         }
         socket.emit('message:received', newMsg);
         socket.emit(`chat:dm:${data.recipientId}`, newMsg);
-      } else {
-        socket.broadcast.emit('message:received', newMsg);
       }
 
       callback?.({ success: true, message: newMsg });
