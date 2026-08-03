@@ -822,15 +822,16 @@ export default function App() {
   };
 
   // WEBRTC MESH VOICE CHANNEL LOGIC
-  const initiateVoicePeerConnection = async (peerUserId: string, channelId: string, isInitiator: boolean) => {
+  const initiateVoicePeerConnection = async (peerUserId: string, channelId: string, isInitiator: boolean, streamOverride?: MediaStream | null) => {
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
 
     voicePeerConnectionsRef.current.set(peerUserId, pc);
 
-    if (voiceLocalStream) {
-      voiceLocalStream.getTracks().forEach(track => pc.addTrack(track, voiceLocalStream));
+    const activeStream = streamOverride || voiceLocalStream;
+    if (activeStream) {
+      activeStream.getTracks().forEach(track => pc.addTrack(track, activeStream));
     }
 
     pc.ontrack = (event) => {
@@ -890,7 +891,7 @@ export default function App() {
             isScreenSharing: false,
             joinedAt: new Date().toISOString(),
           }]);
-          await initiateVoicePeerConnection(peer.userId, channel.id, true);
+          await initiateVoicePeerConnection(peer.userId, channel.id, true, stream);
         }
       }
     });

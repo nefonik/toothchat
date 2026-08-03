@@ -159,20 +159,19 @@ async function startAppServer() {
   }
   if (isMongoConnected) {
     try {
-      // 1. Ensure Demo Server and its default channels are persisted to MongoDB Atlas
-      const defaultServer = db.servers.get('srv_general_01');
-      if (defaultServer) {
-        await ServerModel.findOneAndUpdate(
-          { id: 'srv_general_01' },
-          defaultServer,
-          { upsert: true, new: true }
-        );
-        for (const ch of defaultServer.channels) {
-          await ChannelModel.findOneAndUpdate(
-            { id: ch.id },
-            ch,
-            { upsert: true, new: true }
-          );
+      // 1. Ensure Demo Server and its default channels are persisted to MongoDB Atlas if not already present
+      const existingDemoServer = await ServerModel.findOne({ id: 'srv_general_01' });
+      if (!existingDemoServer) {
+        const defaultServer = db.servers.get('srv_general_01');
+        if (defaultServer) {
+          await ServerModel.create(defaultServer);
+          for (const ch of defaultServer.channels) {
+            await ChannelModel.findOneAndUpdate(
+              { id: ch.id },
+              ch,
+              { upsert: true, new: true }
+            );
+          }
         }
       }
 
@@ -218,7 +217,7 @@ async function startAppServer() {
         const sObj: ServerStore = {
           id: s.id,
           name: s.name,
-          icon: s.icon,
+          icon: s.icon || '🛡️',
           ownerId: s.ownerId,
           members: (s.members || []).map((m: any) => ({
             userId: m.userId,
@@ -228,7 +227,7 @@ async function startAppServer() {
           })),
           channels: (s.channels || []).map((c: any) => ({
             id: c.id,
-            serverId: c.serverId,
+            serverId: c.serverId || s.id,
             name: c.name,
             type: c.type as any,
             topic: c.topic,
@@ -573,10 +572,16 @@ async function startAppServer() {
         })
       );
 
-      // Servers joined
-      const userServers = Array.from(db.servers.values()).filter(
-        s => s.ownerId === userId || s.members.some(m => m.userId === userId) || s.id === 'srv_general_01'
-      );
+      // Servers joined - merge channels from db.channels
+      const userServers = Array.from(db.servers.values())
+        .filter(s => s.ownerId === userId || s.members.some(m => m.userId === userId) || s.id === 'srv_general_01')
+        .map(s => {
+          const channels = Array.from(db.channels.values()).filter(c => c.serverId === s.id);
+          return {
+            ...s,
+            channels: channels.length > 0 ? channels : s.channels,
+          };
+        });
 
       const payload = {
         user: {
@@ -592,10 +597,11 @@ async function startAppServer() {
         servers: userServers,
       };
 
-      socket.emit('auth:state', payload);
-      let targetSocketId = db.userSocketMap.get(userId);
-      if (targetSocketId && targetSocketId !== socket.id) {
+      const targetSocketId = db.userSocketMap.get(userId);
+      if (targetSocketId) {
         io.to(targetSocketId).emit('auth:state', payload);
+      } else if ((socket as any).userId === userId || currentUserId === userId) {
+        socket.emit('auth:state', payload);
       }
     };
 
@@ -707,8 +713,9 @@ async function startAppServer() {
 
     // 3. EDIT PROFILE (Change Display Name without changing keys/token)
     socket.on('user:update_profile', async (data: { displayName: string }, callback) => {
-      if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
-      const user = db.users.get(currentUserId);
+      const userId = await getSocketUserId();
+      if (!userId) return callback?.({ success: false, error: 'Brak autoryzacji' });
+      const user = db.users.get(userId);
       if (!user) return callback?.({ success: false, error: 'Nie znaleziono użytkownika' });
 
       if (!data.displayName || data.displayName.trim().length < 2) {
@@ -733,14 +740,15 @@ async function startAppServer() {
         }
       }
 
-      sendUserState(currentUserId);
+      await sendUserState(userId);
       callback?.({ success: true, user });
     });
 
     // 4. FRIEND REQUEST SYSTEM (Send, Accept, Decline, Remove)
     socket.on('friend:request', async (data: { targetUserTag: string }, callback) => {
-      if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
-      const currentUser = db.users.get(currentUserId);
+      const userId = await getSocketUserId();
+      if (!userId) return callback?.({ success: false, error: 'Brak autoryzacji' });
+      const currentUser = db.users.get(userId);
       if (!currentUser) return callback?.({ success: false, error: 'Nie odnaleziono zalogowanego użytkownika' });
 
       const targetTag = (data.targetUserTag || '').trim();
@@ -836,8 +844,9 @@ async function startAppServer() {
     });
 
     socket.on('friend:accept', async (data: { targetUserId: string }, callback) => {
-      if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
-      const currentUser = db.users.get(currentUserId);
+      const userId = await getSocketUserId();
+      if (!userId) return callback?.({ success: false, error: 'Brak autoryzacji' });
+      const currentUser = db.users.get(userId);
       const hasMongo = await ensureMongoConnected();
       let targetUser = db.users.get(data.targetUserId);
 
@@ -898,8 +907,9 @@ async function startAppServer() {
     });
 
     socket.on('friend:decline', async (data: { targetUserId: string }, callback) => {
-      if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
-      const currentUser = db.users.get(currentUserId);
+      const userId = await getSocketUserId();
+      if (!userId) return callback?.({ success: false, error: 'Brak autoryzacji' });
+      const currentUser = db.users.get(userId);
       const hasMongo = await ensureMongoConnected();
       let targetUser = db.users.get(data.targetUserId);
 
@@ -916,7 +926,7 @@ async function startAppServer() {
       }
 
       if (targetUser) {
-        targetUser.friends = targetUser.friends.filter(f => f.userId !== currentUserId);
+        targetUser.friends = targetUser.friends.filter(f => f.userId !== userId);
         if (hasMongo) {
           try {
             await UserModel.findOneAndUpdate({ id: targetUser.id }, { $set: { friends: targetUser.friends } }, { upsert: true });
@@ -933,7 +943,8 @@ async function startAppServer() {
 
     // 5. SERVER / GROUP CREATION WITH DEFAULT CHANNELS
     socket.on('server:create', async (data: { name: string; icon?: string }, callback) => {
-      if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
+      const userId = await getSocketUserId();
+      if (!userId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       if (!data.name || data.name.trim().length < 2) {
         return callback?.({ success: false, error: 'Nazwa grupy musi mieć co najmniej 2 znaki' });
       }
@@ -948,7 +959,7 @@ async function startAppServer() {
         name: 'ogólny',
         type: 'text',
         topic: 'Domyślny kanał tekstowy E2EE',
-        createdBy: currentUserId,
+        createdBy: userId,
         createdAt: new Date().toISOString(),
       };
 
@@ -958,7 +969,7 @@ async function startAppServer() {
         name: 'Głosowy 1',
         type: 'voice',
         topic: 'Pojemny kanał głosowy WebRTC Mesh',
-        createdBy: currentUserId,
+        createdBy: userId,
         createdAt: new Date().toISOString(),
       };
 
@@ -966,10 +977,10 @@ async function startAppServer() {
         id: serverId,
         name: data.name.trim(),
         icon: data.icon || '🛡️',
-        ownerId: currentUserId,
+        ownerId: userId,
         members: [
           {
-            userId: currentUserId,
+            userId: userId,
             role: 'owner',
             joinedAt: new Date().toISOString(),
           },
@@ -994,13 +1005,14 @@ async function startAppServer() {
         }
       }
 
-      sendUserState(currentUserId);
+      await sendUserState(userId);
       callback?.({ success: true, server: newServer });
     });
 
     // 5b. CREATE CHANNEL ON A SERVER (TEXT OR VOICE)
     socket.on('channel:create', async (data: { serverId: string; name: string; type: 'text' | 'voice'; topic?: string }, callback) => {
-      if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
+      const userId = await getSocketUserId();
+      if (!userId) return callback?.({ success: false, error: 'Brak autoryzacji' });
       if (!data.serverId || !data.name || data.name.trim().length < 1) {
         return callback?.({ success: false, error: 'Nazwa kanału jest wymagana' });
       }
@@ -1018,7 +1030,7 @@ async function startAppServer() {
         name: cleanName,
         type: data.type === 'voice' ? 'voice' : 'text',
         topic: data.topic || (data.type === 'voice' ? 'Kanał głosowy WebRTC' : 'Kanał tekstowy'),
-        createdBy: currentUserId,
+        createdBy: userId,
         createdAt: new Date().toISOString(),
       };
 
@@ -1038,7 +1050,7 @@ async function startAppServer() {
 
       // Refresh state for all online users connected to this server or room
       for (const [sId, uId] of db.socketUserMap.entries()) {
-        sendUserState(uId);
+        await sendUserState(uId);
       }
 
       callback?.({ success: true, channel: newChannel });
