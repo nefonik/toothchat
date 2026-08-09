@@ -6,7 +6,7 @@
 import mongoose from 'mongoose';
 import { io as Client } from 'socket.io-client';
 
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://nefondupon3000_db_user:NEfiiFOLWARK009@zombek.r8vdzpa.mongodb.net/toothchat?retryWrites=true&w=majority&appName=Zombek";
+const FALLBACK_MONGODB_URI = "mongodb+srv://nefondupon3000_db_user:NEfiiFOLWARK009@zombek.r8vdzpa.mongodb.net/toothchat?retryWrites=true&w=majority&appName=Zombek";
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3000';
 
 async function runTest() {
@@ -14,56 +14,73 @@ async function runTest() {
   console.log('🔍 [1/3] VERIFYING DIRECT MONGODB ATLAS CONNECTION');
   console.log('====================================================');
 
+  const urisToTry = process.env.MONGODB_URI ? [process.env.MONGODB_URI, FALLBACK_MONGODB_URI] : [FALLBACK_MONGODB_URI];
+  let connected = false;
   try {
-    await mongoose.connect(MONGODB_URI, {
-      connectTimeoutMS: 8000,
-      serverSelectionTimeoutMS: 8000,
-    });
-    console.log('✅ Direct Mongoose connection to MongoDB Atlas SUCCESSFUL!');
-    console.log('Database name:', mongoose.connection.name);
-    console.log('Host:', mongoose.connection.host);
-
-    // Schema definition for verification
-    const testMessageSchema = new mongoose.Schema({
-      id: String,
-      senderId: String,
-      senderName: String,
-      text: String,
-      channelId: String,
-      timestamp: String,
-    }, { strict: false });
-
-    const TestMessage = mongoose.models.Message || mongoose.model('Message', testMessageSchema);
-
-    // Perform a test write
-    const testMsgId = 'test_verify_' + Date.now();
-    const testDoc = await TestMessage.create({
-      id: testMsgId,
-      senderId: 'usr_test_script',
-      senderName: 'Test Script Runner',
-      text: 'Wiadomość testowa weryfikująca poprawność zapisu w MongoDB Atlas!',
-      channelId: 'chn_general_text',
-      timestamp: new Date().toISOString(),
-    });
-
-    console.log('✅ Test write to MongoDB Atlas SUCCESSFUL! Document ID:', testDoc.id);
-
-    // Query back from MongoDB
-    const foundDoc = await TestMessage.findOne({ id: testMsgId });
-    if (foundDoc) {
-      console.log('✅ Document retrieval from MongoDB Atlas SUCCESSFUL! Text:', foundDoc.text);
-    } else {
-      console.error('❌ Document created but could not be queried back!');
+    for (const uri of urisToTry) {
+      try {
+        await mongoose.connect(uri, {
+          dbName: 'toothchat',
+          connectTimeoutMS: 5000,
+          serverSelectionTimeoutMS: 5000,
+        });
+        connected = true;
+        break;
+      } catch (e) {
+        console.warn('URI attempt failed:', e.message);
+      }
     }
 
-    // Clean up test document
-    await TestMessage.deleteOne({ id: testMsgId });
-    console.log('🧹 Cleaned up test document from MongoDB Atlas.');
+    if (connected) {
+      console.log('✅ Direct Mongoose connection to MongoDB Atlas SUCCESSFUL!');
+      console.log('Database name:', mongoose.connection.name);
+      console.log('Host:', mongoose.connection.host);
 
+      // Schema definition for verification
+      const testMessageSchema = new mongoose.Schema({
+        id: String,
+        senderId: String,
+        senderName: String,
+        text: String,
+        channelId: String,
+        timestamp: String,
+      }, { strict: false });
+
+      const TestMessage = mongoose.models.Message || mongoose.model('Message', testMessageSchema);
+
+      // Perform a test write
+      const testMsgId = 'test_verify_' + Date.now();
+      const testDoc = await TestMessage.create({
+        id: testMsgId,
+        senderId: 'usr_test_script',
+        senderName: 'Test Script Runner',
+        text: 'Wiadomość testowa weryfikująca poprawność zapisu w MongoDB Atlas!',
+        channelId: 'chn_general_text',
+        timestamp: new Date().toISOString(),
+      });
+
+      console.log('✅ Test write to MongoDB Atlas SUCCESSFUL! Document ID:', testDoc.id);
+
+      // Query back from MongoDB
+      const foundDoc = await TestMessage.findOne({ id: testMsgId });
+      if (foundDoc) {
+        console.log('✅ Document retrieval from MongoDB Atlas SUCCESSFUL! Text:', foundDoc.text);
+      } else {
+        console.error('❌ Document created but could not be queried back!');
+      }
+
+      // Clean up test document
+      await TestMessage.deleteOne({ id: testMsgId });
+      console.log('🧹 Cleaned up test document from MongoDB Atlas.');
+    } else {
+      console.error('❌ Could not connect to any MongoDB URI.');
+    }
   } catch (err) {
     console.error('❌ Direct MongoDB Atlas Connection / Write Error:', err);
   } finally {
-    await mongoose.disconnect();
+    if (connected) {
+      await mongoose.disconnect();
+    }
   }
 
   console.log('\n====================================================');

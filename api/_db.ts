@@ -72,33 +72,36 @@ if (!cached) {
 }
 
 export async function connectToMongoDB(): Promise<boolean> {
-  const mongoUri = process.env.MONGODB_URI?.trim() || DEFAULT_MONGODB_URI;
-
   if (cached.conn && mongoose.connection.readyState === 1) {
     return true;
   }
 
-  if (!cached.promise) {
-    const opts = {
-      dbName: 'toothchat',
-      bufferCommands: true,
-      serverSelectionTimeoutMS: 8000,
-      connectTimeoutMS: 8000,
-      maxPoolSize: 10,
-    };
+  const envUri = process.env.MONGODB_URI?.trim();
+  const urisToTry = envUri ? [envUri, DEFAULT_MONGODB_URI] : [DEFAULT_MONGODB_URI];
 
-    cached.promise = mongoose.connect(mongoUri, opts);
+  const opts = {
+    dbName: 'toothchat',
+    bufferCommands: true,
+    serverSelectionTimeoutMS: 5000,
+    connectTimeoutMS: 5000,
+    maxPoolSize: 10,
+  };
+
+  for (const uri of urisToTry) {
+    try {
+      console.log(`[MongoDB Attempt] Connecting to Atlas cluster...`);
+      const conn = await mongoose.connect(uri, opts);
+      cached.conn = conn;
+      cached.promise = Promise.resolve(conn);
+      console.log('[MongoDB Atlas] Connected successfully to database!');
+      return true;
+    } catch (e: any) {
+      console.error(`[MongoDB Connection Error with URI] ${e?.message || e}`);
+      cached.promise = null;
+      cached.conn = null;
+    }
   }
 
-  try {
-    cached.conn = await cached.promise;
-    console.log('[MongoDB Atlas] Connected successfully');
-    return true;
-  } catch (e: any) {
-    console.error('[MongoDB Connection Error]', e?.message || e);
-    cached.promise = null;
-    cached.conn = null;
-    return false;
-  }
+  return false;
 }
 
