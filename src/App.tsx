@@ -176,10 +176,10 @@ export default function App() {
     });
 
     socket.on('message:received', async (msg: EncryptedMessage) => {
-      const currentCh = activeViewRef.current.channelId;
+      const currentCh = activeViewRef.current.channelId || 'chn_general_text';
       const currentDm = activeViewRef.current.dmUserId;
 
-      const isForChannel = currentCh && (msg.channelId === currentCh || (!msg.channelId && currentCh === 'chn_general_text'));
+      const isForChannel = !currentDm && (msg.channelId === currentCh || (!msg.channelId && currentCh === 'chn_general_text') || msg.channelId === 'chn_general_text');
       const isForDm = currentDm && (
         msg.recipientId === currentDm || msg.senderId === currentDm || msg.channelId === `dm_${currentDm}`
       );

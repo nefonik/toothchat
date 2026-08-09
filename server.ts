@@ -1227,16 +1227,16 @@ async function startAppServer() {
       const serverId = data.serverId || (data.channelId ? 'srv_general_01' : undefined);
 
       const newMsg: MessageStore = {
-        id: 'msg_' + crypto.randomBytes(8).toString('hex'),
+        id: (data as any).id || ('msg_' + crypto.randomBytes(8).toString('hex')),
         serverId,
         channelId,
         recipientId: data.recipientId,
         senderId: currentUserId,
         senderName: sender.displayName,
         text: msgText,
-        ciphertext: msgText,
+        ciphertext: data.ciphertext || msgText,
         iv: data.iv || '',
-        keyAlgorithm: 'PLAIN',
+        keyAlgorithm: data.keyAlgorithm || 'PLAIN',
         timestamp: new Date().toISOString(),
       };
 

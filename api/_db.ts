@@ -77,7 +77,7 @@ export async function connectToMongoDB(): Promise<boolean> {
   }
 
   const envUri = process.env.MONGODB_URI?.trim();
-  const urisToTry = envUri ? [envUri, DEFAULT_MONGODB_URI] : [DEFAULT_MONGODB_URI];
+  const urisToTry = [DEFAULT_MONGODB_URI, ...(envUri && envUri !== DEFAULT_MONGODB_URI ? [envUri] : [])];
 
   const opts = {
     dbName: 'toothchat',
