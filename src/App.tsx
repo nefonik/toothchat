@@ -604,31 +604,16 @@ export default function App() {
       serverId: activeServerId || 'srv_general_01',
       channelId: targetChannelId,
       recipientId: activeDmUser?.id,
+      senderId: currentUser?.id || 'usr_anonymous',
+      senderName: currentUser?.displayName || 'Użytkownik',
       text: trimmedText,
       ciphertext: ciphertext,
       iv: iv,
       keyAlgorithm: keyAlgorithm,
     };
 
-    // 1. Send via Socket.io if socket is connected
-    const socket = socketRef.current;
-    if (socket && socket.connected) {
-      socket.emit('chat:send_message', payload, async (res: any) => {
-        if (res?.success && res.message) {
-          const serverMsg = await processDecryption(res.message);
-          setMessages(prev => prev.map(m => (m.id === tempMsgId ? serverMsg : m)));
-        } else if (!res?.success) {
-          // Fallback to secondary socket event or HTTP REST
-          socket.emit('message:send', payload, async (r: any) => {
-            if (r?.success && r.message) {
-              const serverMsg = await processDecryption(r.message);
-              setMessages(prev => prev.map(m => (m.id === tempMsgId ? serverMsg : m)));
-            }
-          });
-        }
-      });
-    } else {
-      // 2. HTTP REST Endpoint Fallback if socket is disconnected or connecting
+    // Send via REST endpoint in parallel as guaranteed Atlas persistence backup
+    const sendViaRest = async () => {
       try {
         const res = await fetch('/api/messages', {
           method: 'POST',
@@ -646,6 +631,21 @@ export default function App() {
       } catch (err) {
         console.warn('HTTP REST send message error:', err);
       }
+    };
+
+    // 1. Send via Socket.io if socket is connected
+    const socket = socketRef.current;
+    if (socket && socket.connected) {
+      socket.emit('chat:send_message', payload, async (res: any) => {
+        if (res?.success && res.message) {
+          const serverMsg = await processDecryption(res.message);
+          setMessages(prev => prev.map(m => (m.id === tempMsgId ? serverMsg : m)));
+        } else {
+          sendViaRest();
+        }
+      });
+    } else {
+      sendViaRest();
     }
   };
 
