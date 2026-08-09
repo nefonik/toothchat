@@ -332,7 +332,7 @@ async function startAppServer() {
         tokenHash,
         displayName: displayName.trim(),
         userTag,
-        ecdhPublicKey: ecdhPublicKeyJwk,
+        ecdhPublicKey: typeof ecdhPublicKeyJwk === 'object' ? JSON.stringify(ecdhPublicKeyJwk) : String(ecdhPublicKeyJwk || ''),
         status: 'online',
         friends: [],
         createdAt: new Date().toISOString(),
@@ -344,10 +344,10 @@ async function startAppServer() {
       const hasMongo = await ensureMongoConnected();
       if (hasMongo) {
         try {
-          await UserModel.create(newUser);
+          await UserModel.findOneAndUpdate({ id: userId }, newUser, { upsert: true, new: true });
           console.log('[MongoDB Atlas] Saved new user:', newUser.id);
         } catch (err) {
-          console.error('MongoDB UserModel.create error:', err);
+          console.error('MongoDB UserModel save error:', err);
         }
       }
 
@@ -429,7 +429,7 @@ async function startAppServer() {
     }
 
     if (hasMongo) {
-      UserModel.create(autoUser).catch((err: any) => console.error('MongoDB autoUser create error:', err));
+      UserModel.findOneAndUpdate({ id: autoUser.id }, autoUser, { upsert: true, new: true }).catch((err: any) => console.error('MongoDB autoUser save error:', err));
     }
 
     return autoUser;
@@ -768,7 +768,7 @@ async function startAppServer() {
           tokenHash,
           displayName: data.displayName.trim(),
           userTag,
-          ecdhPublicKey: data.ecdhPublicKeyJwk,
+          ecdhPublicKey: typeof data.ecdhPublicKeyJwk === 'object' ? JSON.stringify(data.ecdhPublicKeyJwk) : String(data.ecdhPublicKeyJwk || ''),
           status: 'online',
           friends: [],
           createdAt: new Date().toISOString(),
@@ -778,7 +778,7 @@ async function startAppServer() {
         db.tokenHashMap.set(tokenHash, userId);
 
         if (isMongoConnected) {
-          UserModel.create(newUser).catch(err => console.error('MongoDB UserModel.create error:', err));
+          UserModel.findOneAndUpdate({ id: userId }, newUser, { upsert: true, new: true }).catch(err => console.error('MongoDB UserModel save error:', err));
         }
 
         // Auto-add to demo server

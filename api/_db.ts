@@ -3,15 +3,15 @@ import mongoose from 'mongoose';
 // MongoDB Schemas with strict: false so all fields are stored
 const UserSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
-  tokenHash: { type: String, required: true, unique: true, index: true },
-  displayName: { type: String, required: true },
-  userTag: { type: String, required: true, index: true },
-  ecdhPublicKey: { type: String, required: true },
+  tokenHash: { type: String, required: true, index: true },
+  displayName: { type: String, default: 'Użytkownik' },
+  userTag: { type: String, index: true },
+  ecdhPublicKey: { type: mongoose.Schema.Types.Mixed },
   status: { type: String, default: 'offline' },
   friends: [
     {
-      userId: { type: String, required: true },
-      status: { type: String, required: true },
+      userId: { type: String },
+      status: { type: String },
       updatedAt: { type: String, default: () => new Date().toISOString() },
     },
   ],
@@ -21,21 +21,21 @@ const UserSchema = new mongoose.Schema({
 const ChannelSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   serverId: { type: String, index: true },
-  name: { type: String, required: true },
-  type: { type: String, required: true },
+  name: { type: String },
+  type: { type: String, default: 'text' },
   topic: { type: String },
-  createdBy: { type: String, required: true },
+  createdBy: { type: String },
   createdAt: { type: String, default: () => new Date().toISOString() },
 }, { strict: false });
 
 const ServerSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
-  name: { type: String, required: true },
+  name: { type: String },
   icon: { type: String, default: '🛡️' },
-  ownerId: { type: String, required: true },
+  ownerId: { type: String },
   members: [
     {
-      userId: { type: String, required: true },
+      userId: { type: String },
       role: { type: String, default: 'member' },
       joinedAt: { type: String, default: () => new Date().toISOString() },
       encryptedGroupKey: { type: String },
@@ -50,8 +50,8 @@ const MessageSchema = new mongoose.Schema({
   serverId: { type: String, index: true },
   channelId: { type: String, index: true },
   recipientId: { type: String, index: true },
-  senderId: { type: String, required: true, index: true },
-  senderName: { type: String, required: true },
+  senderId: { type: String, index: true },
+  senderName: { type: String, default: 'Użytkownik' },
   text: { type: String },
   ciphertext: { type: String },
   iv: { type: String },
