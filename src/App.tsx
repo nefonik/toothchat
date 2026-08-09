@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { 
   UserProfile, ServerGroup, Channel, FriendRelation, EncryptedMessage 
@@ -44,6 +44,25 @@ export default function App() {
 
   const [messages, setMessages] = useState<(EncryptedMessage & { plaintext?: string; decryptionFailed?: boolean })[]>([]);
   const derivedKeysRef = useRef<Map<string, CryptoKey>>(new Map());
+
+  const updateMessagesListWithHistory = useCallback((historyItems: (EncryptedMessage & { plaintext?: string; decryptionFailed?: boolean })[]) => {
+    setMessages(prev => {
+      const map = new Map<string, EncryptedMessage & { plaintext?: string; decryptionFailed?: boolean }>();
+      historyItems.forEach(item => {
+        if (item && item.id) {
+          map.set(item.id, item);
+        }
+      });
+      prev.forEach(item => {
+        if (item && item.id && !map.has(item.id)) {
+          map.set(item.id, item);
+        }
+      });
+      const merged = Array.from(map.values());
+      merged.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      return merged;
+    });
+  }, []);
 
   const socketRef = useRef<Socket | null>(null);
   const activeViewRef = useRef<{ channelId?: string; dmUserId?: string }>({});
@@ -169,100 +188,102 @@ export default function App() {
     });
 
     socket.on('messages:history', async (data: { channelId: string; messages: EncryptedMessage[] }) => {
-      if (data?.messages) {
-        const decryptedList = await Promise.all(data.messages.map((m: EncryptedMessage) => processDecryption(m)));
-        setMessages(decryptedList);
+    if (data?.messages) {
+      const decryptedList = await Promise.all(data.messages.map((m: EncryptedMessage) => processDecryption(m)));
+      updateMessagesListWithHistory(decryptedList);
+    }
+  });
+
+  socket.on('message:received', async (msg: EncryptedMessage) => {
+    const currentCh = activeViewRef.current.channelId || 'chn_general_text';
+    const currentDm = activeViewRef.current.dmUserId;
+
+    const isForChannel = !currentDm && (msg.channelId === currentCh || (!msg.channelId && currentCh === 'chn_general_text') || msg.channelId === 'chn_general_text');
+    const isForDm = currentDm && (
+      msg.recipientId === currentDm || msg.senderId === currentDm || msg.channelId === `dm_${currentDm}`
+    );
+
+    if (isForChannel || isForDm) {
+      const decryptedMsg = await processDecryption(msg);
+      setMessages(prev => {
+        if (prev.some(m => m.id === msg.id)) return prev;
+        return [...prev, decryptedMsg];
+      });
+    }
+  });
+
+  return () => {
+    socket.disconnect();
+  };
+}, [authToken, identityKeyPair]);
+
+// Load chat history when active channel or DM changes
+useEffect(() => {
+  const setupChatListenerAndHistory = async () => {
+    const cleanCh = (activeChannel && activeChannel.id && activeChannel.id !== 'undefined' && activeChannel.id !== 'null') ? activeChannel.id : '';
+    const cleanDm = (activeDmUser && activeDmUser.id && activeDmUser.id !== 'undefined' && activeDmUser.id !== 'null') ? activeDmUser.id : '';
+    const targetChannelId = cleanCh || (cleanDm ? `dm_${cleanDm}` : 'chn_general_text');
+
+    // 1. Immediate REST API Fetch Fallback for instantaneous loading
+    try {
+      const query = cleanCh
+        ? `channelId=${cleanCh}`
+        : cleanDm
+        ? `recipientId=${cleanDm}`
+        : 'channelId=chn_general_text';
+
+      const res = await fetch(`/api/messages?${query}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.success && Array.isArray(data.history)) {
+          const decryptedList = await Promise.all(data.history.map((m: EncryptedMessage) => processDecryption(m)));
+          updateMessagesListWithHistory(decryptedList);
+        }
       }
-    });
+    } catch (err) {
+      console.warn('REST messages history fallback fetch error:', err);
+    }
 
-    socket.on('message:received', async (msg: EncryptedMessage) => {
-      const currentCh = activeViewRef.current.channelId || 'chn_general_text';
-      const currentDm = activeViewRef.current.dmUserId;
+    // 2. Socket.io Realtime Listener and History Sync
+    const socket = socketRef.current;
+    if (socket) {
+      if (cleanCh) {
+        socket.emit('channel:join', { channelId: cleanCh });
+        socket.emit('chat:get_history', { channelId: cleanCh }, async (res: any) => {
+          if (res?.success && Array.isArray(res.history)) {
+            const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
+            updateMessagesListWithHistory(decryptedList);
+          }
+        });
 
-      const isForChannel = !currentDm && (msg.channelId === currentCh || (!msg.channelId && currentCh === 'chn_general_text') || msg.channelId === 'chn_general_text');
-      const isForDm = currentDm && (
-        msg.recipientId === currentDm || msg.senderId === currentDm || msg.channelId === `dm_${currentDm}`
-      );
+        socket.off(`chat:channel:${cleanCh}`);
+        socket.on(`chat:channel:${cleanCh}`, async (msg: EncryptedMessage) => {
+          const decryptedMsg = await processDecryption(msg);
+          setMessages(prev => {
+            if (prev.some(m => m.id === msg.id)) return prev;
+            return [...prev, decryptedMsg];
+          });
+        });
+      } else if (cleanDm) {
+        socket.emit('channel:join', { channelId: `dm_${cleanDm}` });
+        socket.emit('chat:get_history', { recipientId: cleanDm }, async (res: any) => {
+          if (res?.success && Array.isArray(res.history)) {
+            const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
+            updateMessagesListWithHistory(decryptedList);
+          }
+        });
 
-      if (isForChannel || isForDm) {
-        const decryptedMsg = await processDecryption(msg);
-        setMessages(prev => {
-          if (prev.some(m => m.id === msg.id)) return prev;
-          return [...prev, decryptedMsg];
+        socket.off(`chat:dm:${cleanDm}`);
+        socket.on(`chat:dm:${cleanDm}`, async (msg: EncryptedMessage) => {
+          const decryptedMsg = await processDecryption(msg);
+          setMessages(prev => {
+            if (prev.some(m => m.id === msg.id)) return prev;
+            return [...prev, decryptedMsg];
+          });
         });
       }
-    });
-
-    return () => {
-      socket.disconnect();
-    };
-  }, [authToken, identityKeyPair]);
-
-  // Load chat history when active channel or DM changes
-  useEffect(() => {
-    const setupChatListenerAndHistory = async () => {
-      const targetChannelId = activeChannel ? activeChannel.id : (activeDmUser ? `dm_${activeDmUser.id}` : 'chn_general_text');
-
-      // 1. Immediate REST API Fetch Fallback for instantaneous loading
-      try {
-        const query = activeChannel
-          ? `channelId=${activeChannel.id}`
-          : activeDmUser
-          ? `recipientId=${activeDmUser.id}`
-          : 'channelId=chn_general_text';
-
-        const res = await fetch(`/api/messages?${query}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.success && Array.isArray(data.history)) {
-            const decryptedList = await Promise.all(data.history.map((m: EncryptedMessage) => processDecryption(m)));
-            setMessages(decryptedList);
-          }
-        }
-      } catch (err) {
-        console.warn('REST messages history fallback fetch error:', err);
-      }
-
-      // 2. Socket.io Realtime Listener and History Sync
-      const socket = socketRef.current;
-      if (socket) {
-        if (activeChannel) {
-          socket.emit('channel:join', { channelId: activeChannel.id });
-          socket.emit('chat:get_history', { channelId: activeChannel.id }, async (res: any) => {
-            if (res?.success && res.history) {
-              const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
-              setMessages(decryptedList);
-            }
-          });
-
-          socket.off(`chat:channel:${activeChannel.id}`);
-          socket.on(`chat:channel:${activeChannel.id}`, async (msg: EncryptedMessage) => {
-            const decryptedMsg = await processDecryption(msg);
-            setMessages(prev => {
-              if (prev.some(m => m.id === msg.id)) return prev;
-              return [...prev, decryptedMsg];
-            });
-          });
-        } else if (activeDmUser) {
-          socket.emit('channel:join', { channelId: `dm_${activeDmUser.id}` });
-          socket.emit('chat:get_history', { recipientId: activeDmUser.id }, async (res: any) => {
-            if (res?.success && res.history) {
-              const decryptedList = await Promise.all(res.history.map((m: EncryptedMessage) => processDecryption(m)));
-              setMessages(decryptedList);
-            }
-          });
-
-          socket.off(`chat:dm:${activeDmUser.id}`);
-          socket.on(`chat:dm:${activeDmUser.id}`, async (msg: EncryptedMessage) => {
-            const decryptedMsg = await processDecryption(msg);
-            setMessages(prev => {
-              if (prev.some(m => m.id === msg.id)) return prev;
-              return [...prev, decryptedMsg];
-            });
-          });
-        }
-      }
-    };
+    }
+  };
 
     setupChatListenerAndHistory();
 

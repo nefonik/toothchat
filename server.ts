@@ -460,8 +460,10 @@ async function startAppServer() {
   // REST API: Get Messages History
   app.get('/api/messages', async (req, res) => {
     try {
-      const channelId = req.query.channelId as string;
-      const recipientId = req.query.recipientId as string;
+      const rawCh = req.query.channelId as string;
+      const rawRec = req.query.recipientId as string;
+      const channelId = (!rawCh || rawCh === 'undefined' || rawCh === 'null') ? '' : rawCh;
+      const recipientId = (!rawRec || rawRec === 'undefined' || rawRec === 'null') ? '' : rawRec;
       const targetChannelId = channelId || (recipientId ? `dm_${recipientId}` : 'chn_general_text');
 
       console.log('📡 [REST GET /api/messages] Requesting history for target:', targetChannelId);
@@ -474,10 +476,13 @@ async function startAppServer() {
           const queryConditions: any[] = [{ channelId: targetChannelId }];
           if (channelId) queryConditions.push({ channelId });
           if (recipientId) queryConditions.push({ recipientId });
+          if (targetChannelId === 'chn_general_text') {
+            queryConditions.push({ channelId: { $in: ['chn_general_text', '', null] } });
+          }
 
           const mongoMsgs = await MessageModel.find({
             $or: queryConditions,
-          }).sort({ timestamp: 1 }).limit(300);
+          }).sort({ timestamp: 1 }).limit(500);
 
           history = mongoMsgs.map((m: any) => ({
             id: m.id,
@@ -492,6 +497,13 @@ async function startAppServer() {
             keyAlgorithm: m.keyAlgorithm || 'PLAIN',
             timestamp: m.timestamp || new Date().toISOString(),
           }));
+
+          // Sync into db.messages memory store
+          for (const mObj of history) {
+            const exIdx = db.messages.findIndex(ex => ex.id === mObj.id);
+            if (exIdx >= 0) db.messages[exIdx] = mObj;
+            else db.messages.push(mObj);
+          }
         } catch (e) {
           console.error('[REST GET /api/messages MongoDB Error]', e);
         }
@@ -514,7 +526,9 @@ async function startAppServer() {
   // REST API: Send Message
   app.post('/api/messages', async (req, res) => {
     try {
-      const { token, serverId, channelId, recipientId, text, ciphertext, iv, keyAlgorithm, senderId, senderName } = req.body || {};
+      const { token, serverId, channelId: rawCh, recipientId: rawRec, text, ciphertext, iv, keyAlgorithm, senderId, senderName } = req.body || {};
+      const channelId = (!rawCh || rawCh === 'undefined' || rawCh === 'null') ? '' : rawCh;
+      const recipientId = (!rawRec || rawRec === 'undefined' || rawRec === 'null') ? '' : rawRec;
       const cleanToken = (token || req.headers.authorization?.replace('Bearer ', '') || '').trim();
 
       let user = cleanToken ? await getUserByTokenHash(computeSha256(cleanToken)) : undefined;
@@ -1268,8 +1282,13 @@ async function startAppServer() {
         return callback?.({ success: false, error: 'Treść wiadomości nie może być pusta' });
       }
 
-      const channelId = data.channelId || (data.recipientId ? `dm_${data.recipientId}` : 'chn_general_text');
-      const serverId = data.serverId || (data.channelId ? 'srv_general_01' : undefined);
+      const rawCh = data?.channelId;
+      const rawRec = data?.recipientId;
+      const cleanCh = (!rawCh || rawCh === 'undefined' || rawCh === 'null') ? '' : rawCh;
+      const cleanRec = (!rawRec || rawRec === 'undefined' || rawRec === 'null') ? '' : rawRec;
+
+      const channelId = cleanCh || (cleanRec ? `dm_${cleanRec}` : 'chn_general_text');
+      const serverId = data.serverId || (cleanCh ? 'srv_general_01' : undefined);
 
       const newMsg: MessageStore = {
         id: data.id || ('msg_' + crypto.randomBytes(8).toString('hex')),
@@ -1354,27 +1373,32 @@ async function startAppServer() {
 
       const hasMongo = await ensureMongoConnected();
       let history: MessageStore[] = [];
-      const targetChannelId = data?.channelId || (data?.recipientId ? `dm_${data.recipientId}` : 'chn_general_text');
+      const rawCh = data?.channelId;
+      const rawRec = data?.recipientId;
+      const cleanCh = (!rawCh || rawCh === 'undefined' || rawCh === 'null') ? '' : rawCh;
+      const cleanRec = (!rawRec || rawRec === 'undefined' || rawRec === 'null') ? '' : rawRec;
+      const targetChannelId = cleanCh || (cleanRec ? `dm_${cleanRec}` : 'chn_general_text');
 
       if (hasMongo) {
         try {
           let mongoMsgs: any[] = [];
-          if (data?.recipientId && currentUserId) {
+          if (cleanRec && currentUserId) {
             mongoMsgs = await MessageModel.find({
               $or: [
-                { senderId: currentUserId, recipientId: data.recipientId },
-                { senderId: data.recipientId, recipientId: currentUserId },
-                { channelId: `dm_${data.recipientId}` },
+                { senderId: currentUserId, recipientId: cleanRec },
+                { senderId: cleanRec, recipientId: currentUserId },
+                { channelId: `dm_${cleanRec}` },
                 { channelId: targetChannelId }
               ]
             }).lean();
           } else {
-            const queryChId = data?.channelId || 'chn_general_text';
+            const queryChId = cleanCh || 'chn_general_text';
+            const queryConditions: any[] = [{ channelId: queryChId }, { channelId: targetChannelId }];
+            if (targetChannelId === 'chn_general_text') {
+              queryConditions.push({ channelId: { $in: ['chn_general_text', '', null] } });
+            }
             mongoMsgs = await MessageModel.find({
-              $or: [
-                { channelId: queryChId },
-                { channelId: targetChannelId }
-              ]
+              $or: queryConditions
             }).lean();
           }
 
