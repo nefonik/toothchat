@@ -612,40 +612,32 @@ export default function App() {
       keyAlgorithm: keyAlgorithm,
     };
 
-    // Send via REST endpoint in parallel as guaranteed Atlas persistence backup
-    const sendViaRest = async () => {
-      try {
-        const res = await fetch('/api/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${authToken}`,
-          },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
+    // Guaranteed dual-write: REST write to MongoDB Atlas + Socket.io realtime relay
+    fetch('/api/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`,
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(res => res.json())
+      .then(async data => {
         if (data?.success && data?.message) {
           const serverMsg = await processDecryption(data.message);
           setMessages(prev => prev.map(m => (m.id === tempMsgId ? serverMsg : m)));
         }
-      } catch (err) {
-        console.warn('HTTP REST send message error:', err);
-      }
-    };
+      })
+      .catch(err => console.warn('REST background Atlas save notice:', err));
 
-    // 1. Send via Socket.io if socket is connected
     const socket = socketRef.current;
     if (socket && socket.connected) {
       socket.emit('chat:send_message', payload, async (res: any) => {
         if (res?.success && res.message) {
           const serverMsg = await processDecryption(res.message);
           setMessages(prev => prev.map(m => (m.id === tempMsgId ? serverMsg : m)));
-        } else {
-          sendViaRest();
         }
       });
-    } else {
-      sendViaRest();
     }
   };
 

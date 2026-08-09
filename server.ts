@@ -471,21 +471,21 @@ async function startAppServer() {
 
       if (hasMongo) {
         try {
+          const queryConditions: any[] = [{ channelId: targetChannelId }];
+          if (channelId) queryConditions.push({ channelId });
+          if (recipientId) queryConditions.push({ recipientId });
+
           const mongoMsgs = await MessageModel.find({
-            $or: [
-              { channelId: targetChannelId },
-              { channelId: channelId },
-              ...(recipientId ? [{ recipientId }] : []),
-            ]
-          }).sort({ timestamp: 1 }).limit(100);
+            $or: queryConditions,
+          }).sort({ timestamp: 1 }).limit(300);
 
           history = mongoMsgs.map((m: any) => ({
             id: m.id,
-            serverId: m.serverId,
-            channelId: m.channelId,
+            serverId: m.serverId || 'srv_general_01',
+            channelId: m.channelId || targetChannelId,
             recipientId: m.recipientId,
-            senderId: m.senderId,
-            senderName: m.senderName,
+            senderId: m.senderId || 'usr_anonymous',
+            senderName: m.senderName || 'Użytkownik',
             text: m.text || m.ciphertext || '',
             ciphertext: m.ciphertext || m.text || '',
             iv: m.iv || '',
@@ -503,6 +503,8 @@ async function startAppServer() {
         );
       }
 
+      history.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
       return res.json({ success: true, history });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err?.message || 'Błąd pobierania historii' });
@@ -512,20 +514,12 @@ async function startAppServer() {
   // REST API: Send Message
   app.post('/api/messages', async (req, res) => {
     try {
-      const { token, serverId, channelId, recipientId, text, ciphertext, iv, keyAlgorithm } = req.body || {};
+      const { token, serverId, channelId, recipientId, text, ciphertext, iv, keyAlgorithm, senderId, senderName } = req.body || {};
       const cleanToken = (token || req.headers.authorization?.replace('Bearer ', '') || '').trim();
 
-      if (!cleanToken) {
-        return res.status(401).json({ success: false, error: 'Brak tokena autoryzacyjnego' });
-      }
+      let user = cleanToken ? await getUserByTokenHash(computeSha256(cleanToken)) : undefined;
 
-      const tokenHash = computeSha256(cleanToken);
-      const user = await getUserByTokenHash(tokenHash);
-      if (!user) {
-        return res.status(401).json({ success: false, error: 'Nieprawidłowy token' });
-      }
-
-      const msgText = text || ciphertext || '';
+      const msgText = (text || ciphertext || '').trim();
       if (!msgText) {
         return res.status(400).json({ success: false, error: 'Treść wiadomości nie może być pusta' });
       }
@@ -533,13 +527,16 @@ async function startAppServer() {
       const targetChannelId = channelId || (recipientId ? `dm_${recipientId}` : 'chn_general_text');
       const targetServerId = serverId || (channelId ? 'srv_general_01' : undefined);
 
+      const finalSenderId = user?.id || senderId || ('usr_' + crypto.randomBytes(6).toString('hex'));
+      const finalSenderName = user?.displayName || senderName || 'Użytkownik';
+
       const newMsg: MessageStore = {
         id: req.body.id || ('msg_' + crypto.randomBytes(8).toString('hex')),
-        serverId: targetServerId,
+        serverId: targetServerId || 'srv_general_01',
         channelId: targetChannelId,
-        recipientId: recipientId,
-        senderId: user.id,
-        senderName: user.displayName,
+        recipientId: recipientId || undefined,
+        senderId: finalSenderId,
+        senderName: finalSenderName,
         text: msgText,
         ciphertext: ciphertext || msgText,
         iv: iv || '',
@@ -547,16 +544,23 @@ async function startAppServer() {
         timestamp: new Date().toISOString(),
       };
 
-      if (!db.messages.some(m => m.id === newMsg.id)) {
+      const existingIdx = db.messages.findIndex(m => m.id === newMsg.id);
+      if (existingIdx >= 0) {
+        db.messages[existingIdx] = newMsg;
+      } else {
         db.messages.push(newMsg);
       }
 
       const hasMongo = await ensureMongoConnected();
       if (hasMongo) {
         try {
-          console.log('💾 [REST MongoDB WRITE START] Saving message:', newMsg.id);
-          const saved = await MessageModel.create(newMsg);
-          console.log('✅ [REST MongoDB WRITE SUCCESS] Saved message:', saved.id);
+          console.log('💾 [REST MongoDB WRITE START] Saving message to Atlas:', newMsg.id);
+          const savedDoc = await MessageModel.findOneAndUpdate(
+            { id: newMsg.id },
+            newMsg,
+            { upsert: true, new: true }
+          );
+          console.log('✅ [REST MongoDB WRITE SUCCESS] Saved message to Atlas:', savedDoc?.id || newMsg.id);
         } catch (e: any) {
           console.error('❌ [REST MongoDB WRITE ERROR]', e?.message || e);
         }
@@ -1340,19 +1344,22 @@ async function startAppServer() {
       callback?.({ success: true });
     });
 
-    socket.on('chat:get_history', async (data: { channelId?: string; recipientId?: string }, callback) => {
+    socket.on('chat:get_history', async (data: { channelId?: string; recipientId?: string; token?: string }, callback) => {
       console.log('📩 [Socket Event Received] chat:get_history', { socketId: socket.id, data });
-      const currentUserId = await getSocketUserId();
-      if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
+      let currentUserId = await getSocketUserId(data?.token);
+
+      if (!currentUserId && data?.recipientId) {
+        return callback?.({ success: false, error: 'Brak autoryzacji dla konwersacji prywatnej' });
+      }
 
       const hasMongo = await ensureMongoConnected();
       let history: MessageStore[] = [];
-      const targetChannelId = data.channelId || (data.recipientId ? `dm_${data.recipientId}` : 'chn_general_text');
+      const targetChannelId = data?.channelId || (data?.recipientId ? `dm_${data.recipientId}` : 'chn_general_text');
 
       if (hasMongo) {
         try {
           let mongoMsgs: any[] = [];
-          if (data.recipientId) {
+          if (data?.recipientId && currentUserId) {
             mongoMsgs = await MessageModel.find({
               $or: [
                 { senderId: currentUserId, recipientId: data.recipientId },
@@ -1361,29 +1368,37 @@ async function startAppServer() {
                 { channelId: targetChannelId }
               ]
             }).lean();
-          } else if (data.channelId) {
-            mongoMsgs = await MessageModel.find({ channelId: data.channelId }).lean();
           } else {
-            mongoMsgs = await MessageModel.find({ channelId: 'chn_general_text' }).lean();
+            const queryChId = data?.channelId || 'chn_general_text';
+            mongoMsgs = await MessageModel.find({
+              $or: [
+                { channelId: queryChId },
+                { channelId: targetChannelId }
+              ]
+            }).lean();
           }
 
           if (mongoMsgs && mongoMsgs.length > 0) {
             console.log(`📖 [MongoDB READ] Fetched ${mongoMsgs.length} messages from Atlas for target:`, targetChannelId);
             for (const m of mongoMsgs) {
-              if (!db.messages.some(existing => existing.id === m.id)) {
-                db.messages.push({
-                  id: m.id,
-                  serverId: m.serverId,
-                  channelId: m.channelId,
-                  recipientId: m.recipientId,
-                  senderId: m.senderId,
-                  senderName: m.senderName,
-                  text: m.text || m.ciphertext || '',
-                  ciphertext: m.ciphertext || m.text || '',
-                  iv: m.iv || '',
-                  keyAlgorithm: m.keyAlgorithm || 'PLAIN',
-                  timestamp: m.timestamp || new Date().toISOString(),
-                });
+              const msgObj: MessageStore = {
+                id: m.id,
+                serverId: m.serverId || 'srv_general_01',
+                channelId: m.channelId || targetChannelId,
+                recipientId: m.recipientId,
+                senderId: m.senderId || 'usr_anonymous',
+                senderName: m.senderName || 'Użytkownik',
+                text: m.text || m.ciphertext || '',
+                ciphertext: m.ciphertext || m.text || '',
+                iv: m.iv || '',
+                keyAlgorithm: m.keyAlgorithm || 'PLAIN',
+                timestamp: m.timestamp || new Date().toISOString(),
+              };
+              const existingIdx = db.messages.findIndex(ex => ex.id === m.id);
+              if (existingIdx >= 0) {
+                db.messages[existingIdx] = msgObj;
+              } else {
+                db.messages.push(msgObj);
               }
             }
           }
@@ -1392,15 +1407,15 @@ async function startAppServer() {
         }
       }
 
-      if (data.recipientId) {
+      if (data?.recipientId && currentUserId) {
         history = db.messages.filter(
           m => (m.senderId === currentUserId && m.recipientId === data.recipientId) ||
                (m.senderId === data.recipientId && m.recipientId === currentUserId) ||
                m.channelId === `dm_${data.recipientId}`
         );
       } else {
-        const filterChId = data.channelId || 'chn_general_text';
-        history = db.messages.filter(m => m.channelId === filterChId);
+        const filterChId = data?.channelId || 'chn_general_text';
+        history = db.messages.filter(m => m.channelId === filterChId || m.channelId === targetChannelId);
       }
 
       history.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
