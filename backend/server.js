@@ -8,7 +8,7 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://Toothchat:Antek123!@toothchat.761i0.mongodb.net/ToothchatDB?retryWrites=true&w=majority&appName=Toothchat";
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://nefondupon3000_db_user:NEfiiFOLWARK009@zombek.r8vdzpa.mongodb.net/toothchat?retryWrites=true&w=majority&appName=Zombek";
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "*";
 
 // Express Middleware
@@ -353,12 +353,14 @@ io.on('connection', async (socket) => {
   // Dołączanie do pokoju kanału + pobieranie historii wiadomości z MongoDB
   socket.on('channel:join', async (data, callback) => {
     const channelId = typeof data === 'string' ? data : data?.channelId;
+    console.log('📩 [Socket Event Received in backend/server.js] channel:join', { socketId: socket.id, channelId });
     if (!channelId) return callback?.({ success: false, error: 'Brak channelId' });
 
     socket.join(channelId);
 
     try {
       const messages = await MessageModel.find({ channelId }).sort({ timestamp: 1 }).limit(100);
+      console.log(`📖 [MongoDB READ] Found ${messages.length} messages for channel: ${channelId}`);
       socket.emit('messages:history', { channelId, messages });
       callback?.({ success: true, count: messages.length });
     } catch (err) {
@@ -369,10 +371,12 @@ io.on('connection', async (socket) => {
 
   // Wysyłanie zaszyfrowanej wiadomości (Zapis w MongoDB + Emisja w czasie rzeczywistym)
   socket.on('message:send', async (msgData, callback) => {
+    console.log('📩 [Socket Event Received in backend/server.js] message:send', { socketId: socket.id, msgData });
     try {
-      const { channelId, recipientId, encryptedPayload, iv, senderPublicKey, signature } = msgData;
+      const { channelId, recipientId, encryptedPayload, text, ciphertext, iv, senderPublicKey, signature } = msgData;
 
-      if (!channelId || !encryptedPayload || !iv) {
+      const payload = text || ciphertext || encryptedPayload;
+      if (!channelId || !payload) {
         return callback?.({ success: false, error: 'Niekompletne dane wiadomości' });
       }
 
@@ -383,29 +387,37 @@ io.on('connection', async (socket) => {
         id: msgId,
         channelId,
         senderId: userId,
+        senderName: socket.user?.displayName || 'Użytkownik',
         recipientId: recipientId || null,
-        encryptedPayload,
-        iv,
-        senderPublicKey: senderPublicKey || socket.user.publicKeyJwk,
+        text: payload,
+        ciphertext: payload,
+        encryptedPayload: payload,
+        iv: iv || '',
+        senderPublicKey: senderPublicKey || socket.user?.publicKeyJwk || '',
         signature: signature || '',
         timestamp
       };
 
       // Zapis do bazy MongoDB
-      await MessageModel.findOneAndUpdate({ id: msgId }, newMsg, { upsert: true, new: true });
+      console.log('💾 [MongoDB WRITE START] Saving message to MongoDB:', msgId);
+      const savedDoc = await MessageModel.findOneAndUpdate({ id: msgId }, newMsg, { upsert: true, new: true });
+      console.log('✅ [MongoDB WRITE SUCCESS] Saved message to MongoDB:', savedDoc.id);
 
       // Emisja do pokoju kanału lub adresata bezpośredniego
+      io.emit('message:received', newMsg);
+      if (channelId) {
+        io.to(channelId).emit('message:received', newMsg);
+      }
+
       if (channelId.startsWith('dm_') && recipientId) {
         const targetSocketId = userSocketMap.get(recipientId);
         if (targetSocketId) {
           io.to(targetSocketId).emit('message:received', newMsg);
         }
         socket.emit('message:received', newMsg);
-      } else {
-        io.to(channelId).emit('message:received', newMsg);
       }
 
-      callback?.({ success: true, messageId: msgId });
+      callback?.({ success: true, messageId: msgId, message: newMsg });
     } catch (err) {
       console.error('Error saving/sending message in MongoDB:', err);
       callback?.({ success: false, error: 'Nie udało się zapisać wiadomości w MongoDB' });

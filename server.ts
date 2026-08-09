@@ -457,6 +457,124 @@ async function startAppServer() {
     }
   });
 
+  // REST API: Get Messages History
+  app.get('/api/messages', async (req, res) => {
+    try {
+      const channelId = req.query.channelId as string;
+      const recipientId = req.query.recipientId as string;
+      const targetChannelId = channelId || (recipientId ? `dm_${recipientId}` : 'chn_general_text');
+
+      console.log('📡 [REST GET /api/messages] Requesting history for target:', targetChannelId);
+
+      const hasMongo = await ensureMongoConnected();
+      let history: MessageStore[] = [];
+
+      if (hasMongo) {
+        try {
+          const mongoMsgs = await MessageModel.find({
+            $or: [
+              { channelId: targetChannelId },
+              { channelId: channelId },
+              ...(recipientId ? [{ recipientId }] : []),
+            ]
+          }).sort({ timestamp: 1 }).limit(100);
+
+          history = mongoMsgs.map((m: any) => ({
+            id: m.id,
+            serverId: m.serverId,
+            channelId: m.channelId,
+            recipientId: m.recipientId,
+            senderId: m.senderId,
+            senderName: m.senderName,
+            text: m.text || m.ciphertext || '',
+            ciphertext: m.ciphertext || m.text || '',
+            iv: m.iv || '',
+            keyAlgorithm: m.keyAlgorithm || 'PLAIN',
+            timestamp: m.timestamp || new Date().toISOString(),
+          }));
+        } catch (e) {
+          console.error('[REST GET /api/messages MongoDB Error]', e);
+        }
+      }
+
+      if (history.length === 0) {
+        history = db.messages.filter(m =>
+          m.channelId === targetChannelId || m.channelId === channelId || (recipientId && m.recipientId === recipientId)
+        );
+      }
+
+      return res.json({ success: true, history });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Błąd pobierania historii' });
+    }
+  });
+
+  // REST API: Send Message
+  app.post('/api/messages', async (req, res) => {
+    try {
+      const { token, serverId, channelId, recipientId, text, ciphertext, iv, keyAlgorithm } = req.body || {};
+      const cleanToken = (token || req.headers.authorization?.replace('Bearer ', '') || '').trim();
+
+      if (!cleanToken) {
+        return res.status(401).json({ success: false, error: 'Brak tokena autoryzacyjnego' });
+      }
+
+      const tokenHash = computeSha256(cleanToken);
+      const user = await getUserByTokenHash(tokenHash);
+      if (!user) {
+        return res.status(401).json({ success: false, error: 'Nieprawidłowy token' });
+      }
+
+      const msgText = text || ciphertext || '';
+      if (!msgText) {
+        return res.status(400).json({ success: false, error: 'Treść wiadomości nie może być pusta' });
+      }
+
+      const targetChannelId = channelId || (recipientId ? `dm_${recipientId}` : 'chn_general_text');
+      const targetServerId = serverId || (channelId ? 'srv_general_01' : undefined);
+
+      const newMsg: MessageStore = {
+        id: req.body.id || ('msg_' + crypto.randomBytes(8).toString('hex')),
+        serverId: targetServerId,
+        channelId: targetChannelId,
+        recipientId: recipientId,
+        senderId: user.id,
+        senderName: user.displayName,
+        text: msgText,
+        ciphertext: ciphertext || msgText,
+        iv: iv || '',
+        keyAlgorithm: keyAlgorithm || 'PLAIN',
+        timestamp: new Date().toISOString(),
+      };
+
+      if (!db.messages.some(m => m.id === newMsg.id)) {
+        db.messages.push(newMsg);
+      }
+
+      const hasMongo = await ensureMongoConnected();
+      if (hasMongo) {
+        try {
+          console.log('💾 [REST MongoDB WRITE START] Saving message:', newMsg.id);
+          const saved = await MessageModel.create(newMsg);
+          console.log('✅ [REST MongoDB WRITE SUCCESS] Saved message:', saved.id);
+        } catch (e: any) {
+          console.error('❌ [REST MongoDB WRITE ERROR]', e?.message || e);
+        }
+      }
+
+      // Broadcast via Socket.io
+      io.emit('message:received', newMsg);
+      if (targetChannelId) {
+        io.to(targetChannelId).emit('message:received', newMsg);
+        io.emit(`chat:channel:${targetChannelId}`, newMsg);
+      }
+
+      return res.json({ success: true, message: newMsg });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Błąd wysyłania wiadomości' });
+    }
+  });
+
   // ==========================================
   // SOCKET.IO REAL-TIME SIGNALING & MESSAGING
   // ==========================================
@@ -1068,8 +1186,12 @@ async function startAppServer() {
       iv?: string;
       keyAlgorithm?: string;
     }, callback?: Function) => {
+      console.log('📩 [Socket Event Received] message:send / chat:send_message', { socketId: socket.id, data });
       const currentUserId = await getSocketUserId();
-      if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
+      if (!currentUserId) {
+        console.warn('⚠️ [Socket Auth Fail] Unauthenticated socket attempt to send message');
+        return callback?.({ success: false, error: 'Brak autoryzacji' });
+      }
 
       const hasMongo = await ensureMongoConnected();
       let sender = db.users.get(currentUserId);
@@ -1124,11 +1246,14 @@ async function startAppServer() {
 
       if (hasMongo) {
         try {
-          await MessageModel.create(newMsg);
-          console.log('[MongoDB Atlas] Saved message:', newMsg.id, 'content:', msgText);
+          console.log('💾 [MongoDB WRITE START] Saving message to Atlas MessageModel...', newMsg.id);
+          const savedDoc = await MessageModel.create(newMsg);
+          console.log('✅ [MongoDB WRITE SUCCESS] Saved message to Atlas:', savedDoc.id, 'Content:', msgText);
         } catch (err: any) {
-          console.error('[MongoDB Message Storage Error]', err?.message || err);
+          console.error('❌ [MongoDB WRITE ERROR]', err?.message || err);
         }
+      } else {
+        console.warn('⚠️ [MongoDB Status] MongoDB is not connected, saved message to in-memory store only');
       }
 
       // Auto-join sender to channel room if specified
@@ -1137,6 +1262,7 @@ async function startAppServer() {
       }
 
       // Broadcast message to rooms & recipients
+      console.log('📢 [Socket Relay] Broadcasting message to channel/DM listeners...', { channelId, recipientId: data.recipientId });
       io.emit('message:received', newMsg);
 
       if (channelId) {
@@ -1162,6 +1288,7 @@ async function startAppServer() {
 
     socket.on('channel:join', async (data: { channelId?: string }, callback) => {
       const chId = typeof data === 'string' ? data : data?.channelId;
+      console.log('📩 [Socket Event Received] channel:join', { socketId: socket.id, channelId: chId });
       if (chId) {
         socket.join(chId);
       }
@@ -1169,6 +1296,7 @@ async function startAppServer() {
     });
 
     socket.on('chat:get_history', async (data: { channelId?: string; recipientId?: string }, callback) => {
+      console.log('📩 [Socket Event Received] chat:get_history', { socketId: socket.id, data });
       const currentUserId = await getSocketUserId();
       if (!currentUserId) return callback?.({ success: false, error: 'Brak autoryzacji' });
 
@@ -1195,6 +1323,7 @@ async function startAppServer() {
           }
 
           if (mongoMsgs && mongoMsgs.length > 0) {
+            console.log(`📖 [MongoDB READ] Fetched ${mongoMsgs.length} messages from Atlas for target:`, targetChannelId);
             for (const m of mongoMsgs) {
               if (!db.messages.some(existing => existing.id === m.id)) {
                 db.messages.push({
