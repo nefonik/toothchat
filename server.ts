@@ -569,9 +569,10 @@ async function startAppServer() {
       if (hasMongo) {
         try {
           console.log('💾 [REST MongoDB WRITE START] Saving message to Atlas:', newMsg.id);
+          const cleanMsgForMongo = JSON.parse(JSON.stringify(newMsg));
           const savedDoc = await MessageModel.findOneAndUpdate(
             { id: newMsg.id },
-            newMsg,
+            { $set: cleanMsgForMongo },
             { upsert: true, new: true }
           );
           console.log('✅ [REST MongoDB WRITE SUCCESS] Saved message to Atlas:', savedDoc?.id || newMsg.id);
@@ -1311,9 +1312,10 @@ async function startAppServer() {
       if (hasMongo) {
         try {
           console.log('💾 [MongoDB WRITE START] Saving message to Atlas MessageModel...', newMsg.id);
+          const cleanMsgForMongo = JSON.parse(JSON.stringify(newMsg));
           const savedDoc = await MessageModel.findOneAndUpdate(
             { id: newMsg.id },
-            newMsg,
+            { $set: cleanMsgForMongo },
             { upsert: true, new: true }
           );
           console.log('✅ [MongoDB WRITE SUCCESS] Saved message to Atlas:', savedDoc?.id || newMsg.id, 'Content:', msgText);
