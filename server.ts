@@ -150,6 +150,45 @@ async function ensureMongoConnected(): Promise<boolean> {
   }
 }
 
+async function saveMessageToMongo(newMsg: MessageStore): Promise<boolean> {
+  const existingIdx = db.messages.findIndex(m => m.id === newMsg.id);
+  if (existingIdx >= 0) {
+    db.messages[existingIdx] = newMsg;
+  } else {
+    db.messages.push(newMsg);
+  }
+
+  const hasMongo = await ensureMongoConnected();
+  if (hasMongo) {
+    try {
+      const cleanMsgForMongo = JSON.parse(JSON.stringify(newMsg));
+      await MessageModel.findOneAndUpdate(
+        { id: newMsg.id },
+        { $set: cleanMsgForMongo },
+        { upsert: true, new: true }
+      );
+      console.log('✅ [MongoDB WRITE SUCCESS] Saved message to Atlas:', newMsg.id, 'Text:', newMsg.text);
+      return true;
+    } catch (err: any) {
+      if (err?.code === 11000 || err?.message?.includes('E11000')) {
+        try {
+          const cleanMsgForMongo = JSON.parse(JSON.stringify(newMsg));
+          await MessageModel.updateOne({ id: newMsg.id }, { $set: cleanMsgForMongo });
+          console.log('✅ [MongoDB WRITE RETRY SUCCESS] Updated existing message in Atlas:', newMsg.id);
+          return true;
+        } catch (retryErr: any) {
+          console.error('❌ [MongoDB Retry Error]', retryErr?.message || retryErr);
+        }
+      } else {
+        console.error('❌ [MongoDB Write Error]', err?.message || err);
+      }
+    }
+  } else {
+    console.warn('⚠️ [MongoDB Status] Saved message to in-memory store only');
+  }
+  return false;
+}
+
 async function startAppServer() {
   // Connect to MongoDB Atlas
   try {
@@ -584,27 +623,7 @@ async function startAppServer() {
         timestamp: new Date().toISOString(),
       };
 
-      const existingIdx = db.messages.findIndex(m => m.id === newMsg.id);
-      if (existingIdx >= 0) {
-        db.messages[existingIdx] = newMsg;
-      } else {
-        db.messages.push(newMsg);
-      }
-
-      if (hasMongo) {
-        try {
-          console.log('💾 [REST MongoDB WRITE START] Saving message to Atlas:', newMsg.id);
-          const cleanMsgForMongo = JSON.parse(JSON.stringify(newMsg));
-          const savedDoc = await MessageModel.findOneAndUpdate(
-            { id: newMsg.id },
-            { $set: cleanMsgForMongo },
-            { upsert: true, new: true }
-          );
-          console.log('✅ [REST MongoDB WRITE SUCCESS] Saved message to Atlas:', savedDoc?.id || newMsg.id);
-        } catch (e: any) {
-          console.error('❌ [REST MongoDB WRITE ERROR]', e?.message || e);
-        }
-      }
+      await saveMessageToMongo(newMsg);
 
       // Broadcast via Socket.io
       io.emit('message:received', newMsg);
@@ -1330,26 +1349,7 @@ async function startAppServer() {
         timestamp: new Date().toISOString(),
       };
 
-      if (!db.messages.some(m => m.id === newMsg.id)) {
-        db.messages.push(newMsg);
-      }
-
-      if (hasMongo) {
-        try {
-          console.log('💾 [MongoDB WRITE START] Saving message to Atlas MessageModel...', newMsg.id);
-          const cleanMsgForMongo = JSON.parse(JSON.stringify(newMsg));
-          const savedDoc = await MessageModel.findOneAndUpdate(
-            { id: newMsg.id },
-            { $set: cleanMsgForMongo },
-            { upsert: true, new: true }
-          );
-          console.log('✅ [MongoDB WRITE SUCCESS] Saved message to Atlas:', savedDoc?.id || newMsg.id, 'Content:', msgText);
-        } catch (err: any) {
-          console.error('❌ [MongoDB WRITE ERROR]', err?.message || err);
-        }
-      } else {
-        console.warn('⚠️ [MongoDB Status] MongoDB is not connected, saved message to in-memory store only');
-      }
+      await saveMessageToMongo(newMsg);
 
       // Auto-join sender to channel room if specified
       if (channelId) {
