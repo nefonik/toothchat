@@ -1378,6 +1378,7 @@ async function startAppServer() {
       callback?.({ success: true, message: newMsg });
     };
 
+    socket.on('chat:send', handleSendMessage);
     socket.on('chat:send_message', handleSendMessage);
     socket.on('message:send', handleSendMessage);
 

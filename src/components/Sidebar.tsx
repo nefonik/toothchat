@@ -7,7 +7,7 @@ import { UserProfile, ServerGroup, Channel } from '../types';
 import { ToothIcon } from './ToothIcon';
 
 interface SidebarProps {
-  currentUser: UserProfile;
+  currentUser: UserProfile | null;
   servers: ServerGroup[];
   activeServerId: string | null;
   activeChannelId: string | null;
@@ -213,12 +213,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
             title="Kliknij, aby edytować profil"
           >
             <div className="relative w-8 h-8 rounded-full bg-violet-600/30 border border-violet-500/40 flex items-center justify-center font-bold text-violet-300 text-xs shrink-0">
-              {currentUser.displayName.charAt(0).toUpperCase()}
+              {(currentUser?.displayName || 'Użytkownik').charAt(0).toUpperCase()}
               <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-slate-950" />
             </div>
             <div className="truncate min-w-0">
-              <div className="text-xs font-semibold text-white truncate">{currentUser.displayName}</div>
-              <div className="text-[10px] text-slate-500 font-mono truncate">{currentUser.userTag}</div>
+              <div className="text-xs font-semibold text-white truncate">{currentUser?.displayName || 'Użytkownik'}</div>
+              <div className="text-[10px] text-slate-500 font-mono truncate">{currentUser?.userTag || '#1337'}</div>
             </div>
           </div>
 

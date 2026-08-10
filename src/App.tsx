@@ -16,6 +16,16 @@ import { ChannelCreateModal } from './components/ChannelCreateModal';
 import { ProfileModal } from './components/ProfileModal';
 import { ArchitectureDocsModal } from './components/ArchitectureDocsModal';
 
+const DEFAULT_CHANNEL: Channel = {
+  id: 'chn_general_text',
+  serverId: 'srv_general_01',
+  name: 'ogólny-czat',
+  type: 'text',
+  topic: 'Główny kanał rozmów',
+  createdBy: 'sys_admin',
+  createdAt: new Date().toISOString(),
+};
+
 export default function App() {
   const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem('toothchat_token') || localStorage.getItem('aether_token'));
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
@@ -24,7 +34,7 @@ export default function App() {
   const [servers, setServers] = useState<ServerGroup[]>([]);
   const [friends, setFriends] = useState<FriendRelation[]>([]);
   const [activeServerId, setActiveServerId] = useState<string | null>('srv_general_01');
-  const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
+  const [activeChannel, setActiveChannel] = useState<Channel | null>(DEFAULT_CHANNEL);
   const [activeDmUser, setActiveDmUser] = useState<UserProfile | null>(null);
   const [isFriendsTabOpen, setIsFriendsTabOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
@@ -88,10 +98,29 @@ export default function App() {
           } else if (data?.error && (data.error.includes('Nieprawidłowy') || data.error.includes('nie istnieje'))) {
             localStorage.removeItem('toothchat_token');
             setAuthToken(null);
+          } else {
+            setCurrentUser({
+              id: 'usr_uzytkownik',
+              displayName: 'Użytkownik',
+              userTag: 'Użytkownik#1337',
+              tokenHash: '',
+              ecdhPublicKeyJwk: '',
+              status: 'online',
+              createdAt: new Date().toISOString(),
+            });
           }
         })
         .catch(err => {
           console.warn('Auto-login fetch fallback error:', err);
+          setCurrentUser({
+            id: 'usr_uzytkownik',
+            displayName: 'Użytkownik',
+            userTag: 'Użytkownik#1337',
+            tokenHash: '',
+            ecdhPublicKeyJwk: '',
+            status: 'online',
+            createdAt: new Date().toISOString(),
+          });
         });
     }
   }, [authToken, currentUser]);
@@ -220,8 +249,10 @@ export default function App() {
 // Load chat history when active channel or DM changes
 useEffect(() => {
   const setupChatListenerAndHistory = async () => {
-    const cleanCh = (activeChannel && activeChannel.id && activeChannel.id !== 'undefined' && activeChannel.id !== 'null') ? activeChannel.id : '';
     const cleanDm = (activeDmUser && activeDmUser.id && activeDmUser.id !== 'undefined' && activeDmUser.id !== 'null') ? activeDmUser.id : '';
+    const cleanCh = (!cleanDm && activeChannel && activeChannel.id && activeChannel.id !== 'undefined' && activeChannel.id !== 'null')
+      ? activeChannel.id
+      : (!cleanDm ? 'chn_general_text' : '');
     const targetChannelId = cleanCh || (cleanDm ? `dm_${cleanDm}` : 'chn_general_text');
 
     // 1. Immediate REST API Fetch Fallback for instantaneous loading
@@ -663,7 +694,7 @@ useEffect(() => {
   };
 
   // IF NOT LOGGED IN: SHOW AUTH MODAL
-  if (!authToken || !currentUser) {
+  if (!authToken) {
     return (
       <AuthModal
         onRegister={handleRegister}

@@ -106,15 +106,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               >
                 {/* Avatar */}
                 <div className="w-9 h-9 rounded-full bg-violet-600/20 border border-violet-500/30 flex items-center justify-center font-bold text-violet-300 text-xs flex-shrink-0">
-                  {msg.senderName.charAt(0).toUpperCase()}
+                  {(msg.senderName || 'Użytkownik').charAt(0).toUpperCase()}
                 </div>
 
                 {/* Body */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center space-x-2">
-                    <span className="text-xs font-bold text-slate-200">{msg.senderName}</span>
+                    <span className="text-xs font-bold text-slate-200">{msg.senderName || 'Użytkownik'}</span>
                     <span className="text-[10px] text-slate-500">
-                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                     <span className="text-[10px] text-emerald-400/80 font-mono px-1.5 py-0.2 rounded bg-emerald-500/10 border border-emerald-500/20">
                       E2EE
@@ -128,7 +128,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         ⚠️ [Nie można odszyfrować wiadomości – brak klucza wspólnego]
                       </span>
                     ) : (
-                      msg.plaintext || <span className="text-slate-500 italic">Odszyfrowywanie...</span>
+                      msg.plaintext || msg.text || msg.ciphertext || <span className="text-slate-500 italic">Brak treści</span>
                     )}
                   </div>
 
