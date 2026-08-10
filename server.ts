@@ -12,6 +12,10 @@ import {
   ChannelModel,
   MessageModel,
 } from './api/_db';
+import {
+  saveMessageToDatabase,
+  fetchMessageHistoryFromDatabase,
+} from './api/messageService';
 
 let isMongoConnected = false;
 
@@ -158,35 +162,8 @@ async function saveMessageToMongo(newMsg: MessageStore): Promise<boolean> {
     db.messages.push(newMsg);
   }
 
-  const hasMongo = await ensureMongoConnected();
-  if (hasMongo) {
-    try {
-      const cleanMsgForMongo = JSON.parse(JSON.stringify(newMsg));
-      await MessageModel.findOneAndUpdate(
-        { id: newMsg.id },
-        { $set: cleanMsgForMongo },
-        { upsert: true, new: true }
-      );
-      console.log('✅ [MongoDB WRITE SUCCESS] Saved message to Atlas:', newMsg.id, 'Text:', newMsg.text);
-      return true;
-    } catch (err: any) {
-      if (err?.code === 11000 || err?.message?.includes('E11000')) {
-        try {
-          const cleanMsgForMongo = JSON.parse(JSON.stringify(newMsg));
-          await MessageModel.updateOne({ id: newMsg.id }, { $set: cleanMsgForMongo });
-          console.log('✅ [MongoDB WRITE RETRY SUCCESS] Updated existing message in Atlas:', newMsg.id);
-          return true;
-        } catch (retryErr: any) {
-          console.error('❌ [MongoDB Retry Error]', retryErr?.message || retryErr);
-        }
-      } else {
-        console.error('❌ [MongoDB Write Error]', err?.message || err);
-      }
-    }
-  } else {
-    console.warn('⚠️ [MongoDB Status] Saved message to in-memory store only');
-  }
-  return false;
+  const result = await saveMessageToDatabase(newMsg);
+  return result.success;
 }
 
 async function startAppServer() {
@@ -507,45 +484,13 @@ async function startAppServer() {
 
       console.log('📡 [REST GET /api/messages] Requesting history for target:', targetChannelId);
 
-      const hasMongo = await ensureMongoConnected();
-      let history: MessageStore[] = [];
+      let history: MessageStore[] = await fetchMessageHistoryFromDatabase(channelId, recipientId);
 
-      if (hasMongo) {
-        try {
-          const queryConditions: any[] = [{ channelId: targetChannelId }];
-          if (channelId) queryConditions.push({ channelId });
-          if (recipientId) queryConditions.push({ recipientId });
-          if (targetChannelId === 'chn_general_text') {
-            queryConditions.push({ channelId: { $in: ['chn_general_text', '', null] } });
-          }
-
-          const mongoMsgs = await MessageModel.find({
-            $or: queryConditions,
-          }).sort({ timestamp: 1 }).limit(500);
-
-          history = mongoMsgs.map((m: any) => ({
-            id: m.id,
-            serverId: m.serverId || 'srv_general_01',
-            channelId: m.channelId || targetChannelId,
-            recipientId: m.recipientId,
-            senderId: m.senderId || 'usr_anonymous',
-            senderName: m.senderName || 'Użytkownik',
-            text: m.text || m.ciphertext || '',
-            ciphertext: m.ciphertext || m.text || '',
-            iv: m.iv || '',
-            keyAlgorithm: m.keyAlgorithm || 'PLAIN',
-            timestamp: m.timestamp || new Date().toISOString(),
-          }));
-
-          // Sync into db.messages memory store
-          for (const mObj of history) {
-            const exIdx = db.messages.findIndex(ex => ex.id === mObj.id);
-            if (exIdx >= 0) db.messages[exIdx] = mObj;
-            else db.messages.push(mObj);
-          }
-        } catch (e) {
-          console.error('[REST GET /api/messages MongoDB Error]', e);
-        }
+      // Sync into db.messages memory store
+      for (const mObj of history) {
+        const exIdx = db.messages.findIndex(ex => ex.id === mObj.id);
+        if (exIdx >= 0) db.messages[exIdx] = mObj;
+        else db.messages.push(mObj);
       }
 
       if (history.length === 0) {
@@ -1399,66 +1344,20 @@ async function startAppServer() {
         return callback?.({ success: false, error: 'Brak autoryzacji dla konwersacji prywatnej' });
       }
 
-      const hasMongo = await ensureMongoConnected();
-      let history: MessageStore[] = [];
       const rawCh = data?.channelId;
       const rawRec = data?.recipientId;
       const cleanCh = (!rawCh || rawCh === 'undefined' || rawCh === 'null') ? '' : rawCh;
       const cleanRec = (!rawRec || rawRec === 'undefined' || rawRec === 'null') ? '' : rawRec;
       const targetChannelId = cleanCh || (cleanRec ? `dm_${cleanRec}` : 'chn_general_text');
 
-      if (hasMongo) {
-        try {
-          let mongoMsgs: any[] = [];
-          if (cleanRec && currentUserId) {
-            mongoMsgs = await MessageModel.find({
-              $or: [
-                { senderId: currentUserId, recipientId: cleanRec },
-                { senderId: cleanRec, recipientId: currentUserId },
-                { channelId: `dm_${cleanRec}` },
-                { channelId: targetChannelId }
-              ]
-            }).lean();
-          } else {
-            const queryChId = cleanCh || 'chn_general_text';
-            const queryConditions: any[] = [{ channelId: queryChId }, { channelId: targetChannelId }];
-            if (targetChannelId === 'chn_general_text') {
-              queryConditions.push({ channelId: { $in: ['chn_general_text', '', null] } });
-            }
-            mongoMsgs = await MessageModel.find({
-              $or: queryConditions
-            }).lean();
-          }
-
-          if (mongoMsgs && mongoMsgs.length > 0) {
-            console.log(`📖 [MongoDB READ] Fetched ${mongoMsgs.length} messages from Atlas for target:`, targetChannelId);
-            for (const m of mongoMsgs) {
-              const msgObj: MessageStore = {
-                id: m.id,
-                serverId: m.serverId || 'srv_general_01',
-                channelId: m.channelId || targetChannelId,
-                recipientId: m.recipientId,
-                senderId: m.senderId || 'usr_anonymous',
-                senderName: m.senderName || 'Użytkownik',
-                text: m.text || m.ciphertext || '',
-                ciphertext: m.ciphertext || m.text || '',
-                iv: m.iv || '',
-                keyAlgorithm: m.keyAlgorithm || 'PLAIN',
-                timestamp: m.timestamp || new Date().toISOString(),
-              };
-              const existingIdx = db.messages.findIndex(ex => ex.id === m.id);
-              if (existingIdx >= 0) {
-                db.messages[existingIdx] = msgObj;
-              } else {
-                db.messages.push(msgObj);
-              }
-            }
-          }
-        } catch (e) {
-          console.error('[MongoDB chat:get_history error]', e);
-        }
+      const mongoHistory = await fetchMessageHistoryFromDatabase(cleanCh, cleanRec, currentUserId);
+      for (const mObj of mongoHistory) {
+        const existingIdx = db.messages.findIndex(ex => ex.id === mObj.id);
+        if (existingIdx >= 0) db.messages[existingIdx] = mObj;
+        else db.messages.push(mObj);
       }
 
+      let history: MessageStore[] = [];
       if (data?.recipientId && currentUserId) {
         history = db.messages.filter(
           m => (m.senderId === currentUserId && m.recipientId === data.recipientId) ||

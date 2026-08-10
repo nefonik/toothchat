@@ -664,31 +664,27 @@ useEffect(() => {
       keyAlgorithm: keyAlgorithm,
     };
 
-    const socket = socketRef.current;
-    if (socket && socket.connected) {
-      socket.emit('chat:send_message', payload, async (res: any) => {
-        if (res?.success && res.message) {
-          const serverMsg = await processDecryption(res.message);
+    // GUARANTEED DUAL-DISPATCH: Direct REST API Write to MongoDB Atlas + Realtime Socket.io
+    fetch('/api/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`,
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(res => res.json())
+      .then(async data => {
+        if (data?.success && data?.message) {
+          const serverMsg = await processDecryption(data.message);
           setMessages(prev => prev.map(m => (m.id === tempMsgId ? serverMsg : m)));
         }
-      });
-    } else {
-      fetch('/api/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`,
-        },
-        body: JSON.stringify(payload),
       })
-        .then(res => res.json())
-        .then(async data => {
-          if (data?.success && data?.message) {
-            const serverMsg = await processDecryption(data.message);
-            setMessages(prev => prev.map(m => (m.id === tempMsgId ? serverMsg : m)));
-          }
-        })
-        .catch(err => console.warn('REST background Atlas save notice:', err));
+      .catch(err => console.warn('REST direct Atlas message save notice:', err));
+
+    const socket = socketRef.current;
+    if (socket && socket.connected) {
+      socket.emit('chat:send_message', payload);
     }
   };
 
