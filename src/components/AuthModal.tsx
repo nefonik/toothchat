@@ -196,7 +196,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onRegister, onLogin }) => 
           <form onSubmit={handleSubmitLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                Token Autoryzacyjny
+                Token lub Nazwa Użytkownika
               </label>
               <div className="relative">
                 <input
@@ -204,7 +204,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onRegister, onLogin }) => 
                   required
                   value={tokenInput}
                   onChange={(e) => setTokenInput(e.target.value)}
-                  placeholder="ath_sec_..."
+                  placeholder="np. nefon lub twój token ath_sec_..."
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none text-sm text-emerald-400 font-mono placeholder-slate-600"
                 />
                 <Key className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
@@ -212,7 +212,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onRegister, onLogin }) => 
             </div>
 
             <p className="text-xs text-slate-400">
-              System obliczy SHA-256 z twojego tokenu i zweryfikuje zgodność z bazą. Klucze prywatne pozostaną na twoim urządzeniu.
+              Wpisz swoją nazwę użytkownika (np. <strong>nefon</strong>) lub skopiowany token. System bezpiecznie połączy Cię z Twoim kontem w MongoDB Atlas.
             </p>
 
             <button

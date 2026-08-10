@@ -99,10 +99,11 @@ export default function App() {
             localStorage.removeItem('toothchat_token');
             setAuthToken(null);
           } else {
+            const fallbackName = (authToken && authToken.length < 30 && !/^[a-f0-9]{32,}$/i.test(authToken)) ? authToken : 'Użytkownik';
             setCurrentUser({
-              id: 'usr_uzytkownik',
-              displayName: 'Użytkownik',
-              userTag: 'Użytkownik#1337',
+              id: 'usr_' + (authToken || 'uzytkownik'),
+              displayName: fallbackName,
+              userTag: `${fallbackName}#1337`,
               tokenHash: '',
               ecdhPublicKeyJwk: '',
               status: 'online',
@@ -112,10 +113,11 @@ export default function App() {
         })
         .catch(err => {
           console.warn('Auto-login fetch fallback error:', err);
+          const fallbackName = (authToken && authToken.length < 30 && !/^[a-f0-9]{32,}$/i.test(authToken)) ? authToken : 'Użytkownik';
           setCurrentUser({
-            id: 'usr_uzytkownik',
-            displayName: 'Użytkownik',
-            userTag: 'Użytkownik#1337',
+            id: 'usr_' + (authToken || 'uzytkownik'),
+            displayName: fallbackName,
+            userTag: `${fallbackName}#1337`,
             tokenHash: '',
             ecdhPublicKeyJwk: '',
             status: 'online',

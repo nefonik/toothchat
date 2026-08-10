@@ -386,17 +386,32 @@ async function startAppServer() {
   });
 
   // Helper to get user by tokenHash with MongoDB dynamic lookup fallback
-  async function getUserByTokenHash(tokenHash: string): Promise<UserStore> {
+  async function getUserByTokenHash(tokenHash: string, rawToken?: string): Promise<UserStore> {
     const existingUserId = db.tokenHashMap.get(tokenHash);
     if (existingUserId) {
       const u = db.users.get(existingUserId);
       if (u) return u;
     }
 
+    const cleanRaw = (rawToken || '').trim();
+
     const hasMongo = await ensureMongoConnected();
     if (hasMongo) {
       try {
-        const u = await UserModel.findOne({ tokenHash });
+        let u = await UserModel.findOne({ tokenHash });
+        if (!u && cleanRaw) {
+          // Fallback lookup by displayName (case-insensitive) or userTag or id
+          const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const safeRaw = escapeRegex(cleanRaw);
+          u = await UserModel.findOne({
+            $or: [
+              { displayName: { $regex: new RegExp(`^${safeRaw}$`, 'i') } },
+              { userTag: { $regex: new RegExp(`^${safeRaw}`, 'i') } },
+              { id: cleanRaw }
+            ]
+          });
+        }
+
         if (u) {
           const uObj: UserStore = {
             id: u.id,
@@ -404,7 +419,7 @@ async function startAppServer() {
             displayName: u.displayName,
             userTag: u.userTag,
             ecdhPublicKey: u.ecdhPublicKey,
-            status: 'offline',
+            status: 'online',
             friends: (u.friends || []).map((f: any) => ({
               userId: f.userId,
               status: f.status as any,
@@ -414,6 +429,7 @@ async function startAppServer() {
           };
           db.users.set(u.id, uObj);
           db.tokenHashMap.set(u.tokenHash, u.id);
+          db.tokenHashMap.set(tokenHash, u.id);
           return uObj;
         }
       } catch (e) {
@@ -421,15 +437,16 @@ async function startAppServer() {
       }
     }
 
-    // Auto-provision user if unknown tokenHash (e.g. after server restart or static auth fallback)
+    // Auto-provision user if unknown tokenHash or rawToken
     const userId = 'usr_' + computeSha256(tokenHash).substring(0, 12);
     const randomTag = Math.floor(1000 + Math.random() * 9000);
-    const userTag = `Użytkownik#${randomTag}`;
+    const chosenName = (cleanRaw && cleanRaw.length < 30 && !/^[a-f0-9]{32,}$/i.test(cleanRaw)) ? cleanRaw : 'Użytkownik';
+    const userTag = `${chosenName}#${randomTag}`;
     const dummyKey = JSON.stringify({ kty: 'EC', crv: 'P-256', x: 'dummy', y: 'dummy' });
     const autoUser: UserStore = {
       id: userId,
       tokenHash,
-      displayName: 'Użytkownik',
+      displayName: chosenName,
       userTag,
       ecdhPublicKey: dummyKey,
       status: 'online',
@@ -461,7 +478,7 @@ async function startAppServer() {
 
       const cleanToken = token.trim();
       const tokenHash = computeSha256(cleanToken);
-      const user = await getUserByTokenHash(tokenHash);
+      const user = await getUserByTokenHash(tokenHash, cleanToken);
 
       if (!user) {
         return res.status(401).json({ success: false, error: 'Nieprawidłowy token konta. Użytkownik nie istnieje.' });
@@ -515,7 +532,7 @@ async function startAppServer() {
       const recipientId = (!rawRec || rawRec === 'undefined' || rawRec === 'null') ? '' : rawRec;
       const cleanToken = (token || req.headers.authorization?.replace('Bearer ', '') || '').trim();
 
-      let user = cleanToken ? await getUserByTokenHash(computeSha256(cleanToken)) : undefined;
+      let user = cleanToken ? await getUserByTokenHash(computeSha256(cleanToken), cleanToken) : undefined;
 
       const hasMongo = await ensureMongoConnected();
 
@@ -594,8 +611,9 @@ async function startAppServer() {
       // Allow unauthenticated connection for registration
       return next();
     }
-    const tokenHash = computeSha256(String(token).trim());
-    const user = await getUserByTokenHash(tokenHash);
+    const cleanToken = String(token).trim();
+    const tokenHash = computeSha256(cleanToken);
+    const user = await getUserByTokenHash(tokenHash, cleanToken);
     if (user) {
       (socket as any).userId = user.id;
     }
@@ -616,7 +634,7 @@ async function startAppServer() {
       if (token && String(token).trim().length > 0) {
         const cleanToken = String(token).trim();
         const tokenHash = computeSha256(cleanToken);
-        const user = await getUserByTokenHash(tokenHash);
+        const user = await getUserByTokenHash(tokenHash, cleanToken);
         if (user) {
           (socket as any).userId = user.id;
           db.socketUserMap.set(socket.id, user.id);
@@ -818,7 +836,7 @@ async function startAppServer() {
 
         const cleanToken = data.token.trim();
         const tokenHash = computeSha256(cleanToken);
-        const user = await getUserByTokenHash(tokenHash);
+        const user = await getUserByTokenHash(tokenHash, cleanToken);
 
         if (!user) {
           return callback({ success: false, error: 'Nieprawidłowy token autoryzacyjny' });
@@ -1205,8 +1223,9 @@ async function startAppServer() {
       let sender = currentUserId ? db.users.get(currentUserId) : undefined;
 
       if (!sender && data?.token) {
-        const tokenHash = computeSha256(String(data.token).trim());
-        sender = await getUserByTokenHash(tokenHash);
+        const cleanT = String(data.token).trim();
+        const tokenHash = computeSha256(cleanT);
+        sender = await getUserByTokenHash(tokenHash, cleanT);
         if (sender) {
           currentUserId = sender.id;
           (socket as any).userId = sender.id;
