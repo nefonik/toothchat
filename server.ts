@@ -533,6 +533,32 @@ async function startAppServer() {
 
       let user = cleanToken ? await getUserByTokenHash(computeSha256(cleanToken)) : undefined;
 
+      const hasMongo = await ensureMongoConnected();
+
+      if (!user && cleanToken) {
+        const tokenHash = computeSha256(cleanToken);
+        const newUserId = senderId || ('usr_' + crypto.randomBytes(6).toString('hex'));
+        const newDisplayName = senderName || 'Użytkownik';
+        user = {
+          id: newUserId,
+          tokenHash,
+          displayName: newDisplayName,
+          userTag: newDisplayName + '#' + Math.floor(1000 + Math.random() * 9000),
+          ecdhPublicKey: '',
+          status: 'online',
+          friends: [],
+          createdAt: new Date().toISOString(),
+        };
+        db.users.set(newUserId, user);
+        if (hasMongo) {
+          try {
+            await UserModel.findOneAndUpdate({ id: newUserId }, user, { upsert: true, new: true });
+          } catch (e) {
+            console.warn('[Auto User Creation Error]', e);
+          }
+        }
+      }
+
       const msgText = (text || ciphertext || '').trim();
       if (!msgText) {
         return res.status(400).json({ success: false, error: 'Treść wiadomości nie może być pusta' });
@@ -565,7 +591,6 @@ async function startAppServer() {
         db.messages.push(newMsg);
       }
 
-      const hasMongo = await ensureMongoConnected();
       if (hasMongo) {
         try {
           console.log('💾 [REST MongoDB WRITE START] Saving message to Atlas:', newMsg.id);
