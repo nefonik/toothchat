@@ -83,17 +83,23 @@ export async function fetchMessageHistoryFromDatabase(
 
     let queryConditions: any[] = [];
 
-    if (cleanRec && currentUserId) {
+    if (cleanRec) {
       queryConditions = [
-        { senderId: currentUserId, recipientId: cleanRec },
-        { senderId: cleanRec, recipientId: currentUserId },
+        { recipientId: cleanRec },
+        { senderId: cleanRec },
         { channelId: `dm_${cleanRec}` },
         { channelId: targetChannelId }
       ];
+      if (currentUserId) {
+        queryConditions.push(
+          { senderId: currentUserId, recipientId: cleanRec },
+          { senderId: cleanRec, recipientId: currentUserId }
+        );
+      }
     } else {
       const queryChId = cleanCh || 'chn_general_text';
       queryConditions = [{ channelId: queryChId }, { channelId: targetChannelId }];
-      if (targetChannelId === 'chn_general_text') {
+      if (targetChannelId === 'chn_general_text' || queryChId === 'chn_general_text') {
         queryConditions.push({ channelId: { $in: ['chn_general_text', '', null] } });
       }
     }

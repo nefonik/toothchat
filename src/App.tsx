@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { 
   UserProfile, ServerGroup, Channel, FriendRelation, EncryptedMessage 
@@ -229,7 +229,7 @@ export default function App() {
     const currentCh = activeViewRef.current.channelId || 'chn_general_text';
     const currentDm = activeViewRef.current.dmUserId;
 
-    const isForChannel = !currentDm && (msg.channelId === currentCh || (!msg.channelId && currentCh === 'chn_general_text') || msg.channelId === 'chn_general_text');
+    const isForChannel = !currentDm && (msg.channelId === currentCh || (!msg.channelId && currentCh === 'chn_general_text'));
     const isForDm = currentDm && (
       msg.recipientId === currentDm || msg.senderId === currentDm || msg.channelId === `dm_${currentDm}`
     );
@@ -700,6 +700,20 @@ useEffect(() => {
     );
   }
 
+  const displayedMessages = useMemo(() => {
+    if (activeDmUser) {
+      const dmId = activeDmUser.id;
+      return messages.filter(m =>
+        m.recipientId === dmId || m.senderId === dmId || m.channelId === `dm_${dmId}`
+      );
+    }
+    if (activeChannel) {
+      const chId = activeChannel.id;
+      return messages.filter(m => m.channelId === chId || (!m.channelId && chId === 'chn_general_text'));
+    }
+    return messages.filter(m => m.channelId === 'chn_general_text' || !m.channelId);
+  }, [messages, activeChannel, activeDmUser]);
+
   return (
     <div className="flex h-screen w-screen bg-slate-950 font-sans antialiased text-slate-100 overflow-hidden">
       
@@ -868,7 +882,7 @@ useEffect(() => {
           <ChatArea
             channelName={activeChannel?.name}
             dmRecipient={activeDmUser || undefined}
-            messages={messages}
+            messages={displayedMessages}
             onSendMessage={handleSendMessage}
             onOpenDocsModal={() => setIsDocsModalOpen(true)}
             onToggleMobileSidebar={() => setIsMobileSidebarOpen(prev => !prev)}

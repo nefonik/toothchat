@@ -499,9 +499,17 @@ async function startAppServer() {
       const recipientId = (!rawRec || rawRec === 'undefined' || rawRec === 'null') ? '' : rawRec;
       const targetChannelId = channelId || (recipientId ? `dm_${recipientId}` : 'chn_general_text');
 
-      console.log('📡 [REST GET /api/messages] Requesting history for target:', targetChannelId);
+      const authHeader = req.headers.authorization?.replace('Bearer ', '').trim();
+      const cleanToken = authHeader || (req.query.token as string || '').trim();
+      let currentUserId: string | undefined = undefined;
+      if (cleanToken) {
+        const u = await getUserByTokenHash(computeSha256(cleanToken), cleanToken);
+        if (u) currentUserId = u.id;
+      }
 
-      let history: MessageStore[] = await fetchMessageHistoryFromDatabase(channelId, recipientId);
+      console.log('📡 [REST GET /api/messages] Requesting history for target:', targetChannelId, 'User:', currentUserId);
+
+      let history: MessageStore[] = await fetchMessageHistoryFromDatabase(channelId, recipientId, currentUserId);
 
       // Sync into db.messages memory store
       for (const mObj of history) {
