@@ -33,11 +33,34 @@ export default function App() {
 
   const [servers, setServers] = useState<ServerGroup[]>([]);
   const [friends, setFriends] = useState<FriendRelation[]>([]);
+  const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [activeServerId, setActiveServerId] = useState<string | null>('srv_general_01');
   const [activeChannel, setActiveChannel] = useState<Channel | null>(DEFAULT_CHANNEL);
   const [activeDmUser, setActiveDmUser] = useState<UserProfile | null>(null);
   const [isFriendsTabOpen, setIsFriendsTabOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+
+  const fetchUsersList = useCallback(async () => {
+    try {
+      const res = await fetch('/api/users');
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.success && Array.isArray(data.users)) {
+          setAllUsers(data.users);
+        }
+      }
+    } catch (err) {
+      console.warn('Error fetching users list:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authToken) {
+      fetchUsersList();
+      const interval = setInterval(fetchUsersList, 15000);
+      return () => clearInterval(interval);
+    }
+  }, [authToken, fetchUsersList]);
 
   const [isCreateServerModalOpen, setIsCreateServerModalOpen] = useState(false);
   const [isCreateChannelModalOpen, setIsCreateChannelModalOpen] = useState(false);
@@ -209,12 +232,24 @@ export default function App() {
       }
     });
 
+    socket.on('users:list', (users: UserProfile[]) => {
+      if (Array.isArray(users)) {
+        setAllUsers(users);
+      }
+    });
+
     socket.on('user:presence', (data: { userId: string; status: string }) => {
       setFriends(prev => prev.map(f => {
         if (f.userId === data.userId && f.user) {
           return { ...f, user: { ...f.user, status: data.status as any } };
         }
         return f;
+      }));
+      setAllUsers(prev => prev.map(u => {
+        if (u.id === data.userId) {
+          return { ...u, status: data.status as any };
+        }
+        return u;
       }));
     });
 
@@ -714,6 +749,62 @@ useEffect(() => {
     return messages.filter(m => m.channelId === 'chn_general_text' || !m.channelId);
   }, [messages, activeChannel, activeDmUser]);
 
+  const dmUsers = useMemo(() => {
+    const userMap = new Map<string, UserProfile>();
+
+    // 1. From friends
+    friends.forEach(f => {
+      if (f.user && f.user.id !== currentUser?.id) {
+        userMap.set(f.user.id, f.user);
+      }
+    });
+
+    // 2. From messages where current user participated
+    messages.forEach(m => {
+      if (m.recipientId && m.recipientId !== currentUser?.id) {
+        const u = allUsers.find(user => user.id === m.recipientId);
+        if (u) userMap.set(u.id, u);
+      }
+      if (m.senderId && m.senderId !== currentUser?.id) {
+        const u = allUsers.find(user => user.id === m.senderId);
+        if (u) userMap.set(u.id, u);
+      }
+    });
+
+    // 3. If currently active DM user is set
+    if (activeDmUser && activeDmUser.id !== currentUser?.id) {
+      userMap.set(activeDmUser.id, activeDmUser);
+    }
+
+    // 4. Default fill with all other registered users in Atlas so the list is immediately useful
+    allUsers.filter(u => u.id !== currentUser?.id).forEach(u => {
+      if (!userMap.has(u.id)) {
+        userMap.set(u.id, u);
+      }
+    });
+
+    return Array.from(userMap.values());
+  }, [friends, messages, allUsers, activeDmUser, currentUser]);
+
+  const handleSelectDmUserById = (userId: string) => {
+    const found = allUsers.find(u => u.id === userId) || friends.find(f => f.userId === userId)?.user;
+    if (found) {
+      setActiveDmUser(found);
+      setActiveServerId(null);
+      setActiveChannel(null);
+      setIsFriendsTabOpen(false);
+      setIsMobileSidebarOpen(false);
+    }
+  };
+
+  const handleSelectDmProfile = (user: UserProfile) => {
+    setActiveDmUser(user);
+    setActiveServerId(null);
+    setActiveChannel(null);
+    setIsFriendsTabOpen(false);
+    setIsMobileSidebarOpen(false);
+  };
+
   return (
     <div className="flex h-screen w-screen bg-slate-950 font-sans antialiased text-slate-100 overflow-hidden">
       
@@ -727,6 +818,7 @@ useEffect(() => {
           activeDmUserId={activeDmUser?.id || null}
           friendsCount={friends.filter(f => f.status === 'accepted').length}
           activeVoiceChannelId={null}
+          dmUsers={dmUsers}
           onSelectServer={(serverId) => {
             setActiveServerId(serverId);
             setActiveDmUser(null);
@@ -743,16 +835,8 @@ useEffect(() => {
             setIsMobileSidebarOpen(false);
             setActiveChannel(channel);
           }}
-          onSelectDmUser={(userId) => {
-            const friendObj = friends.find(f => f.userId === userId)?.user;
-            if (friendObj) {
-              setActiveDmUser(friendObj);
-              setActiveServerId(null);
-              setActiveChannel(null);
-              setIsFriendsTabOpen(false);
-              setIsMobileSidebarOpen(false);
-            }
-          }}
+          onSelectDmUser={handleSelectDmUserById}
+          onSelectDmProfile={handleSelectDmProfile}
           onOpenFriendsTab={() => {
             setActiveServerId(null);
             setActiveChannel(null);
@@ -798,6 +882,7 @@ useEffect(() => {
               activeDmUserId={activeDmUser?.id || null}
               friendsCount={friends.filter(f => f.status === 'accepted').length}
               activeVoiceChannelId={null}
+              dmUsers={dmUsers}
               onSelectServer={(serverId) => {
                 setActiveServerId(serverId);
                 setActiveDmUser(null);
@@ -814,16 +899,8 @@ useEffect(() => {
                 setIsMobileSidebarOpen(false);
                 setActiveChannel(channel);
               }}
-              onSelectDmUser={(userId) => {
-                const friendObj = friends.find(f => f.userId === userId)?.user;
-                if (friendObj) {
-                  setActiveDmUser(friendObj);
-                  setActiveServerId(null);
-                  setActiveChannel(null);
-                  setIsFriendsTabOpen(false);
-                  setIsMobileSidebarOpen(false);
-                }
-              }}
+              onSelectDmUser={handleSelectDmUserById}
+              onSelectDmProfile={handleSelectDmProfile}
               onOpenFriendsTab={() => {
                 setActiveServerId(null);
                 setActiveChannel(null);
@@ -859,6 +936,8 @@ useEffect(() => {
         {isFriendsTabOpen ? (
           <FriendsView
             friends={friends}
+            allUsers={allUsers}
+            currentUserId={currentUser?.id}
             onSendFriendRequest={async (userTag) => {
               return new Promise((res) => {
                 socketRef.current?.emit('friend:request', { userTag }, (r: any) => {
@@ -872,10 +951,7 @@ useEffect(() => {
             onDeclineFriendRequest={async (userId) => {
               socketRef.current?.emit('friend:decline', { targetUserId: userId });
             }}
-            onSelectDmUser={(user) => {
-              setActiveDmUser(user);
-              setIsFriendsTabOpen(false);
-            }}
+            onSelectDmUser={handleSelectDmProfile}
             onToggleMobileSidebar={() => setIsMobileSidebarOpen(prev => !prev)}
           />
         ) : (
@@ -883,7 +959,10 @@ useEffect(() => {
             channelName={activeChannel?.name}
             dmRecipient={activeDmUser || undefined}
             messages={displayedMessages}
+            allMembers={allUsers}
+            currentUserId={currentUser?.id}
             onSendMessage={handleSendMessage}
+            onSelectDmUser={handleSelectDmProfile}
             onOpenDocsModal={() => setIsDocsModalOpen(true)}
             onToggleMobileSidebar={() => setIsMobileSidebarOpen(prev => !prev)}
           />

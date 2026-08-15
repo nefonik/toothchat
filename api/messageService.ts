@@ -7,11 +7,11 @@ export interface MessagePayload {
   recipientId?: string;
   senderId: string;
   senderName: string;
-  text: string;
+  text?: string;
   ciphertext?: string;
   iv?: string;
   keyAlgorithm?: string;
-  timestamp?: string;
+  timestamp: string;
 }
 
 /**

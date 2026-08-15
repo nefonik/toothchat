@@ -15,6 +15,7 @@ import {
 import {
   saveMessageToDatabase,
   fetchMessageHistoryFromDatabase,
+  MessagePayload,
 } from './api/messageService';
 
 let isMongoConnected = false;
@@ -152,6 +153,22 @@ async function ensureMongoConnected(): Promise<boolean> {
     isMongoConnected = false;
     return false;
   }
+}
+
+function payloadToStore(p: MessagePayload): MessageStore {
+  return {
+    id: p.id,
+    serverId: p.serverId || 'srv_general_01',
+    channelId: p.channelId || (p.recipientId ? `dm_${p.recipientId}` : 'chn_general_text'),
+    recipientId: p.recipientId,
+    senderId: p.senderId,
+    senderName: p.senderName,
+    text: p.text || p.ciphertext || '',
+    ciphertext: p.ciphertext || p.text || '',
+    iv: p.iv || '',
+    keyAlgorithm: p.keyAlgorithm || 'PLAIN',
+    timestamp: p.timestamp || new Date().toISOString(),
+  };
 }
 
 async function saveMessageToMongo(newMsg: MessageStore): Promise<boolean> {
@@ -490,6 +507,52 @@ async function startAppServer() {
     }
   });
 
+  // REST API: Get All Users / Community Members
+  app.get('/api/users', async (req, res) => {
+    try {
+      const hasMongo = await ensureMongoConnected();
+      if (hasMongo) {
+        try {
+          const atlasUsers = await UserModel.find({}).lean();
+          for (const u of atlasUsers) {
+            const isOnline = db.userSocketMap.has(u.id);
+            const userObj: UserStore = {
+              id: u.id,
+              tokenHash: u.tokenHash,
+              displayName: u.displayName || 'Użytkownik',
+              userTag: u.userTag || 'Użytkownik#1337',
+              ecdhPublicKey: typeof u.ecdhPublicKey === 'object' ? JSON.stringify(u.ecdhPublicKey) : String(u.ecdhPublicKey || ''),
+              status: isOnline ? 'online' : 'offline',
+              friends: (u.friends || []).map((f: any) => ({
+                userId: f.userId,
+                status: f.status,
+                updatedAt: f.updatedAt || new Date().toISOString(),
+              })),
+              createdAt: u.createdAt || new Date().toISOString(),
+            };
+            db.users.set(u.id, userObj);
+            db.tokenHashMap.set(u.tokenHash, u.id);
+          }
+        } catch (e) {
+          console.warn('[MongoDB Users Fetch Notice]', e);
+        }
+      }
+
+      const usersList = Array.from(db.users.values()).map(u => ({
+        id: u.id,
+        displayName: u.displayName,
+        userTag: u.userTag,
+        ecdhPublicKeyJwk: u.ecdhPublicKey,
+        status: db.userSocketMap.has(u.id) ? 'online' : 'offline',
+        createdAt: u.createdAt,
+      }));
+
+      return res.json({ success: true, users: usersList });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Błąd pobierania użytkowników' });
+    }
+  });
+
   // REST API: Get Messages History
   app.get('/api/messages', async (req, res) => {
     try {
@@ -509,7 +572,8 @@ async function startAppServer() {
 
       console.log('📡 [REST GET /api/messages] Requesting history for target:', targetChannelId, 'User:', currentUserId);
 
-      let history: MessageStore[] = await fetchMessageHistoryFromDatabase(channelId, recipientId, currentUserId);
+      const mongoHistory = await fetchMessageHistoryFromDatabase(channelId, recipientId, currentUserId);
+      let history: MessageStore[] = mongoHistory.map(payloadToStore);
 
       // Sync into db.messages memory store
       for (const mObj of history) {
@@ -1378,7 +1442,8 @@ async function startAppServer() {
       const targetChannelId = cleanCh || (cleanRec ? `dm_${cleanRec}` : 'chn_general_text');
 
       const mongoHistory = await fetchMessageHistoryFromDatabase(cleanCh, cleanRec, currentUserId);
-      for (const mObj of mongoHistory) {
+      for (const mPayload of mongoHistory) {
+        const mObj = payloadToStore(mPayload);
         const existingIdx = db.messages.findIndex(ex => ex.id === mObj.id);
         if (existingIdx >= 0) db.messages[existingIdx] = mObj;
         else db.messages.push(mObj);

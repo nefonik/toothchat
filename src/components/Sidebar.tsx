@@ -13,9 +13,12 @@ interface SidebarProps {
   activeChannelId: string | null;
   activeDmUserId: string | null;
   friendsCount: number;
+  activeVoiceChannelId?: string | null;
+  dmUsers?: UserProfile[];
   onSelectServer: (serverId: string | null) => void;
   onSelectChannel: (channel: Channel) => void;
   onSelectDmUser: (userId: string) => void;
+  onSelectDmProfile?: (user: UserProfile) => void;
   onOpenFriendsTab: () => void;
   onOpenCreateServerModal: () => void;
   onOpenDocsModal: () => void;
@@ -32,9 +35,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeChannelId,
   activeDmUserId,
   friendsCount,
+  dmUsers = [],
   onSelectServer,
   onSelectChannel,
   onSelectDmUser,
+  onSelectDmProfile,
   onOpenFriendsTab,
   onOpenCreateServerModal,
   onOpenDocsModal,
@@ -142,25 +147,75 @@ export const Sidebar: React.FC<SidebarProps> = ({
           
           {/* DM MODE */}
           {activeServerId === null && (
-            <div className="space-y-1">
-              <button
-                onClick={onOpenFriendsTab}
-                className={`w-full px-3 py-2 rounded-xl flex items-center justify-between text-xs font-medium transition-all ${
-                  activeDmUserId === null
-                    ? 'bg-violet-600/20 text-violet-300 border border-violet-500/30'
-                    : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
-                }`}
-              >
-                <div className="flex items-center space-x-2">
-                  <Users className="w-4 h-4 text-violet-400" />
-                  <span>Znajomi</span>
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <button
+                  onClick={onOpenFriendsTab}
+                  className={`w-full px-3 py-2 rounded-xl flex items-center justify-between text-xs font-medium transition-all ${
+                    activeDmUserId === null
+                      ? 'bg-violet-600/20 text-violet-300 border border-violet-500/30'
+                      : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2">
+                    <Users className="w-4 h-4 text-violet-400" />
+                    <span>Znajomi i Społeczność</span>
+                  </div>
+                  {friendsCount > 0 && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-violet-600 text-white font-bold">
+                      {friendsCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* DIRECT MESSAGES LIST */}
+              <div>
+                <div className="px-2 mb-1.5 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  Prywatne Wiadomości (DM)
                 </div>
-                {friendsCount > 0 && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] bg-violet-600 text-white font-bold">
-                    {friendsCount}
-                  </span>
+                {dmUsers.length === 0 ? (
+                  <div className="px-2 py-3 text-center text-[11px] text-slate-500 font-mono">
+                    Wybierz użytkownika ze społeczności, aby zacząć czat
+                  </div>
+                ) : (
+                  <div className="space-y-0.5">
+                    {dmUsers.map(dmUser => {
+                      const isActive = activeDmUserId === dmUser.id;
+                      const isOnline = dmUser.status === 'online';
+                      return (
+                        <button
+                          key={dmUser.id}
+                          onClick={() => {
+                            if (onSelectDmProfile) {
+                              onSelectDmProfile(dmUser);
+                            } else {
+                              onSelectDmUser(dmUser.id);
+                            }
+                          }}
+                          className={`w-full px-2.5 py-1.5 rounded-xl flex items-center space-x-2.5 text-xs transition-all ${
+                            isActive
+                              ? 'bg-violet-600/20 text-violet-200 font-semibold border border-violet-500/30'
+                              : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200'
+                          }`}
+                        >
+                          <div className="relative w-6 h-6 rounded-full bg-violet-600/30 border border-violet-500/40 flex items-center justify-center font-bold text-violet-300 text-[10px] shrink-0">
+                            {dmUser.displayName.charAt(0).toUpperCase()}
+                            <span
+                              className={`absolute bottom-0 right-0 w-2 h-2 rounded-full border border-slate-950 ${
+                                isOnline ? 'bg-emerald-500' : 'bg-slate-600'
+                              }`}
+                            />
+                          </div>
+                          <div className="truncate text-left flex-1 min-w-0">
+                            <div className="truncate text-xs">{dmUser.displayName}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
-              </button>
+              </div>
             </div>
           )}
 
