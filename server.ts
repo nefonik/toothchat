@@ -582,10 +582,20 @@ async function startAppServer() {
         else db.messages.push(mObj);
       }
 
-      if (history.length === 0) {
-        history = db.messages.filter(m =>
-          m.channelId === targetChannelId || m.channelId === channelId || (recipientId && m.recipientId === recipientId)
-        );
+      // Ensure any messages stored in memory are also merged
+      const memMatches = db.messages.filter(m => {
+        if (recipientId) {
+          return (m.senderId === recipientId && (m.recipientId === currentUserId || !currentUserId)) ||
+                 (m.recipientId === recipientId && (m.senderId === currentUserId || !currentUserId)) ||
+                 m.channelId === `dm_${recipientId}`;
+        }
+        return m.channelId === targetChannelId || m.channelId === channelId || (!m.channelId && targetChannelId === 'chn_general_text');
+      });
+
+      for (const memM of memMatches) {
+        if (!history.some(h => h.id === memM.id)) {
+          history.push(memM);
+        }
       }
 
       history.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -596,7 +606,7 @@ async function startAppServer() {
     }
   });
 
-  // REST API: Send Message
+  // REST API: Send Message (Direct MongoDB Atlas Persistence)
   app.post('/api/messages', async (req, res) => {
     try {
       const { token, serverId, channelId: rawCh, recipientId: rawRec, text, ciphertext, iv, keyAlgorithm, senderId, senderName } = req.body || {};
@@ -607,6 +617,15 @@ async function startAppServer() {
       let user = cleanToken ? await getUserByTokenHash(computeSha256(cleanToken), cleanToken) : undefined;
 
       const hasMongo = await ensureMongoConnected();
+
+      if (user && senderName && senderName !== 'Użytkownik' && user.displayName === 'Użytkownik') {
+        user.displayName = senderName;
+        user.userTag = `${senderName}#${Math.floor(1000 + Math.random() * 9000)}`;
+        db.users.set(user.id, user);
+        if (hasMongo) {
+          UserModel.updateOne({ id: user.id }, { $set: { displayName: user.displayName, userTag: user.userTag } }).catch(() => {});
+        }
+      }
 
       if (!user && cleanToken) {
         const tokenHash = computeSha256(cleanToken);
@@ -641,7 +660,7 @@ async function startAppServer() {
       const targetServerId = serverId || (channelId ? 'srv_general_01' : undefined);
 
       const finalSenderId = user?.id || senderId || ('usr_' + crypto.randomBytes(6).toString('hex'));
-      const finalSenderName = user?.displayName || senderName || 'Użytkownik';
+      const finalSenderName = (user?.displayName && user.displayName !== 'Użytkownik') ? user.displayName : (senderName || user?.displayName || 'Użytkownik');
 
       const newMsg: MessageStore = {
         id: req.body.id || ('msg_' + crypto.randomBytes(8).toString('hex')),
@@ -659,11 +678,16 @@ async function startAppServer() {
 
       await saveMessageToMongo(newMsg);
 
-      // Broadcast via Socket.io
+      // Broadcast via Socket.io to all listeners
       io.emit('message:received', newMsg);
+      io.emit('message:new', newMsg);
       if (targetChannelId) {
         io.to(targetChannelId).emit('message:received', newMsg);
         io.emit(`chat:channel:${targetChannelId}`, newMsg);
+      }
+      if (recipientId) {
+        io.emit(`chat:dm:${recipientId}`, newMsg);
+        io.emit(`chat:dm:${finalSenderId}`, newMsg);
       }
 
       return res.json({ success: true, message: newMsg });
